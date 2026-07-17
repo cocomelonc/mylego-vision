@@ -322,6 +322,44 @@ def add_inventory(item: InvItem):
     return {"ok": True}
 
 
+@app.post("/api/inventory/import-set/{set_num}")
+def import_set_inventory(set_num: str):
+    """Add the complete latest inventory of an owned set to my_parts."""
+    with closing(db()) as con:
+        lego_set = con.execute(
+            "SELECT set_num, name FROM sets WHERE set_num=?", (set_num,)
+        ).fetchone()
+        if not lego_set:
+            raise HTTPException(404, f"unknown set {set_num}")
+
+        totals = con.execute(
+            """SELECT COUNT(*) AS distinct_items,
+                      COALESCE(SUM(quantity), 0) AS total_quantity
+               FROM set_parts WHERE set_num=?""",
+            (set_num,),
+        ).fetchone()
+        if totals["total_quantity"] == 0:
+            raise HTTPException(404, f"set {set_num} has no inventory")
+
+        con.execute(
+            """INSERT INTO my_parts (part_num, color_id, quantity)
+               SELECT part_num, color_id, quantity
+               FROM set_parts
+               WHERE set_num=?
+               ON CONFLICT(part_num, color_id)
+               DO UPDATE SET quantity = quantity + excluded.quantity""",
+            (set_num,),
+        )
+        con.commit()
+    return {
+        "ok": True,
+        "set_num": lego_set["set_num"],
+        "name": lego_set["name"],
+        "added_quantity": totals["total_quantity"],
+        "distinct_items": totals["distinct_items"],
+    }
+
+
 @app.delete("/api/inventory/{part_num}/{color_id}")
 def del_inventory(part_num: str, color_id: int):
     with closing(db()) as con:
@@ -357,6 +395,29 @@ def colors():
     with closing(db()) as con:
         rows = con.execute(
             "SELECT id, name, rgb FROM colors WHERE id >= 0 ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/sets/search")
+def search_sets(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(8, ge=1, le=20),
+):
+    with closing(db()) as con:
+        rows = con.execute(
+            """SELECT s.set_num, s.name, s.year, s.num_parts, s.img_url,
+                      st.total_qty
+               FROM sets s
+               JOIN set_totals st ON st.set_num = s.set_num
+               WHERE s.set_num LIKE ? OR s.name LIKE ?
+               ORDER BY CASE
+                   WHEN LOWER(s.set_num) = LOWER(?) THEN 0
+                   WHEN s.set_num LIKE ? THEN 1
+                   ELSE 2
+               END, st.total_qty DESC
+               LIMIT ?""",
+            (f"{q}%", f"%{q}%", q, f"{q}%", limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

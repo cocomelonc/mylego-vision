@@ -134,6 +134,25 @@ class InventoryRegressionTests(unittest.TestCase):
                 """
                 CREATE TABLE parts (part_num TEXT PRIMARY KEY, name TEXT);
                 CREATE TABLE colors (id INTEGER PRIMARY KEY, name TEXT, rgb TEXT);
+                CREATE TABLE sets (
+                    set_num TEXT PRIMARY KEY,
+                    name TEXT,
+                    year INTEGER,
+                    theme_id INTEGER,
+                    num_parts INTEGER,
+                    img_url TEXT
+                );
+                CREATE TABLE set_parts (
+                    set_num TEXT,
+                    part_num TEXT,
+                    color_id INTEGER,
+                    quantity INTEGER
+                );
+                CREATE TABLE set_totals (
+                    set_num TEXT PRIMARY KEY,
+                    total_qty INTEGER,
+                    distinct_parts INTEGER
+                );
                 CREATE TABLE my_parts (
                     part_num TEXT NOT NULL,
                     color_id INTEGER NOT NULL,
@@ -142,7 +161,16 @@ class InventoryRegressionTests(unittest.TestCase):
                     PRIMARY KEY (part_num, color_id)
                 );
                 INSERT INTO parts VALUES ('3001', 'Brick 2 x 4');
+                INSERT INTO parts VALUES ('3020', 'Plate 2 x 4');
                 INSERT INTO colors VALUES (5, 'Red', 'C91A09');
+                INSERT INTO colors VALUES (7, 'Blue', '0055BF');
+                INSERT INTO sets VALUES (
+                    'demo-1', 'Serious Demo Set', 2026, 1, 5,
+                    'https://example.test/demo.jpg'
+                );
+                INSERT INTO set_parts VALUES ('demo-1', '3001', 5, 2);
+                INSERT INTO set_parts VALUES ('demo-1', '3020', 7, 3);
+                INSERT INTO set_totals VALUES ('demo-1', 5, 2);
                 """
             )
 
@@ -179,6 +207,44 @@ class InventoryRegressionTests(unittest.TestCase):
                 "SELECT quantity FROM my_parts WHERE part_num='3001' AND color_id=5"
             ).fetchone()[0]
         self.assertEqual(quantity, 4)
+
+    def test_set_search_returns_import_preview(self):
+        rows = main.search_sets(q="serious", limit=8)
+
+        self.assertEqual(
+            rows,
+            [{
+                "set_num": "demo-1",
+                "name": "Serious Demo Set",
+                "year": 2026,
+                "num_parts": 5,
+                "img_url": "https://example.test/demo.jpg",
+                "total_qty": 5,
+            }],
+        )
+
+    def test_import_owned_set_adds_complete_inventory_atomically(self):
+        first = main.import_set_inventory("demo-1")
+        second = main.import_set_inventory("demo-1")
+
+        self.assertEqual(first["added_quantity"], 5)
+        self.assertEqual(first["distinct_items"], 2)
+        self.assertEqual(second["added_quantity"], 5)
+        with sqlite3.connect(main.DB_PATH) as con:
+            rows = con.execute(
+                """SELECT part_num, color_id, quantity FROM my_parts
+                   ORDER BY part_num"""
+            ).fetchall()
+        self.assertEqual(rows, [("3001", 5, 4), ("3020", 7, 6)])
+
+    def test_import_owned_set_rejects_unknown_set_without_changes(self):
+        with self.assertRaises(HTTPException) as caught:
+            main.import_set_inventory("missing-1")
+
+        self.assertEqual(caught.exception.status_code, 404)
+        with sqlite3.connect(main.DB_PATH) as con:
+            count = con.execute("SELECT COUNT(*) FROM my_parts").fetchone()[0]
+        self.assertEqual(count, 0)
 
 
 class ApiSchemaRegressionTests(unittest.TestCase):

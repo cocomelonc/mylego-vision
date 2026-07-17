@@ -61,11 +61,15 @@ fully-CPU later just point `OLLAMA_HOST` at a smaller local model
 
 ![img](./img/scan.png)    
 
-**Inventory** - confirmed parts land in `my_parts` (part_num + color + qty). Manual add by part number/name also works.    
+**Inventory** - confirmed parts land in `my_parts` (part_num + color + qty).
+Manual add by part number/name works, and a complete set you own can be imported
+by set number after preview and confirmation.
 
 ![img](./img/inventory.png)        
 
-**Builds** - every real LEGO set ranked by coverage: 100% buildable, 90%+ near-buildable, etc. Click a set to see which parts are missing. `exact color` / `any color` modes.     
+**Builds** - every real LEGO set ranked by coverage: 100% buildable, 90%+
+near-buildable, etc. Click a set to see a large assembled-model preview and the
+parts that are still missing. `exact color` / `any color` modes.
 
 ![img](./img/builds.png)    
 
@@ -87,6 +91,8 @@ Sample part photos to try: `test_images/*.jpg`.
 |---|---|
 | `POST /api/scan?engine=fast\|deep` | identify a part on a photo |
 | `GET/POST/DELETE /api/inventory` | my parts CRUD |
+| `GET /api/sets/search?q=...` | find a set to preview/import |
+| `POST /api/inventory/import-set/{set}` | add a complete owned set to inventory |
 | `GET /api/buildable?mode=strict\|loose` | ranked buildable sets |
 | `GET /api/buildable/{set}/missing` | missing-parts diff for a set |
 | `POST /api/advise` | LLM MOC ideas from inventory |

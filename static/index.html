@@ -184,6 +184,24 @@
     .qty-badge { margin-left: auto; font-family: var(--mono); font-size: .85rem; color: var(--yellow); font-weight: 600; }
     .del { background: none; border: none; color: var(--dim); cursor: pointer; font-size: .95rem; padding: 4px; }
     .del:hover { color: var(--red); }
+    .set-import {
+      display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 18px;
+      align-items: center; margin-bottom: 18px;
+    }
+    .set-import input { width: 100%; margin-top: 8px; }
+    .set-import-results { display: grid; gap: 8px; }
+    .set-import-result {
+      display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+      border: 1px solid var(--sep); border-radius: var(--radius);
+      background: rgba(255,255,255,.72);
+    }
+    .set-import-result img {
+      width: 72px; height: 54px; object-fit: contain; flex-shrink: 0;
+      background: #fff; border-radius: 6px;
+    }
+    .set-import-result .body { flex: 1; min-width: 0; }
+    .set-import-result .nm { font-size: .8rem; font-weight: 600; }
+    .set-import-result .meta { margin-top: 3px; color: var(--dim); font: .68rem var(--mono); }
 
     /* build cards */
     .set-card {
@@ -204,6 +222,25 @@
     .pct.near { color: var(--yellow); }
 
     .missing { margin: -4px 0 14px; padding: 14px 16px; background: var(--bg3); border: 1px solid var(--sep); border-radius: var(--radius); }
+    .set-preview {
+      display: grid; grid-template-columns: minmax(220px, 340px) 1fr; gap: 20px;
+      align-items: center; margin-bottom: 16px; padding-bottom: 16px;
+      border-bottom: 1px solid var(--sep);
+    }
+    .set-preview > img {
+      width: 100%; height: 230px; object-fit: contain; background: #fff;
+      border: 1px solid var(--sep); border-radius: var(--radius);
+      box-shadow: 0 8px 22px rgba(30,108,153,.1);
+    }
+    .set-preview .title { margin: 7px 0 5px; font-size: 1.15rem; font-weight: 700; }
+    .set-preview .meta { color: var(--dim); font: .72rem var(--mono); line-height: 1.6; }
+    .set-preview .coverage { margin-top: 12px; color: var(--primary); font: 700 1.2rem var(--mono); }
+    .missing-list { max-height: 360px; overflow: auto; padding-right: 4px; }
+    .build-complete {
+      padding: 16px; color: var(--green); background: #E8F7EE;
+      border: 1px solid rgba(38,158,88,.28); border-radius: var(--radius);
+      font-size: .82rem; text-align: center;
+    }
     .miss-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: .78rem; border-bottom: 1px solid rgba(185,217,234,.65); }
     .miss-row:last-child { border-bottom: none; }
     .miss-row img { width: 30px; height: 30px; object-fit: contain; background: #fff; border-radius: 4px; }
@@ -248,6 +285,12 @@
     }
     .toast.show { opacity: 1; }
     .toast.err { border-color: var(--red); color: var(--red); }
+    @media (max-width: 700px) {
+      .set-import, .set-preview { grid-template-columns: 1fr; }
+      .set-preview > img { height: 200px; }
+      .set-import-result { align-items: flex-start; flex-wrap: wrap; }
+      .set-import-result .btn { margin-left: 84px; }
+    }
   </style>
 </head>
 <body>
@@ -306,6 +349,16 @@
         <button class="btn ghost sm" id="clear-inv">clear all</button>
       </div>
     </div>
+    <div class="card set-import">
+      <div>
+        <div class="label">import a LEGO set you own</div>
+        <input type="text" id="owned-set" placeholder="set number or name · e.g. 31152-1"/>
+        <div class="hint mt">Adds the set's complete part inventory after confirmation. Try 31152-1, 31129-1, or 31109-1 for larger builds.</div>
+      </div>
+      <div class="set-import-results" id="owned-set-results">
+        <div class="hint">Search results will show the assembled model and exact piece count before anything is added.</div>
+      </div>
+    </div>
     <div id="manual-results"></div>
     <div class="inv-grid" id="inv-grid"></div>
     <div class="empty" id="inv-empty">Inventory is empty - scan some parts first.</div>
@@ -352,6 +405,7 @@ const safeImageUrl = value => {
 
 let scanFile = null, engine = 'fast', mode = 'strict';
 let selCand = null, selColor = null;
+let buildSets = new Map(), ownedSetMatches = new Map();
 
 function toast(msg, err=false) {
   const t = $('#toast');
@@ -507,6 +561,66 @@ $('#clear-inv').onclick = async () => {
   await api('/api/inventory/clear', { method: 'POST' }); loadInventory();
 };
 
+/* import a complete owned set */
+let setTimer, setSearchSerial = 0;
+$('#owned-set').oninput = e => {
+  clearTimeout(setTimer);
+  const q = e.target.value.trim();
+  const box = $('#owned-set-results');
+  if (q.length < 2) {
+    setSearchSerial++;
+    ownedSetMatches = new Map();
+    box.innerHTML = '<div class="hint">Search results will show the assembled model and exact piece count before anything is added.</div>';
+    return;
+  }
+  const serial = ++setSearchSerial;
+  setTimer = setTimeout(async () => {
+    box.innerHTML = '<div class="spin" style="margin:12px auto"></div>';
+    try {
+      const rows = await api('/api/sets/search?q=' + encodeURIComponent(q));
+      if (serial !== setSearchSerial) return;
+      ownedSetMatches = new Map(rows.map(s => [String(s.set_num), s]));
+      if (!rows.length) {
+        box.innerHTML = '<div class="hint">No set found. Use the set number printed on the box, including the suffix when possible.</div>';
+        return;
+      }
+      box.innerHTML = rows.map(s => `
+        <div class="set-import-result">
+          <img src="${safeImageUrl(s.img_url)}" onerror="this.style.visibility='hidden'"/>
+          <div class="body"><div class="nm">${escapeHtml(s.name)}</div>
+          <div class="meta">${escapeHtml(s.set_num)} · ${escapeHtml(s.year)} · ${escapeHtml(s.total_qty)} pieces</div></div>
+          <button class="btn green sm import-set-btn" data-set="${escapeHtml(s.set_num)}">+ import</button>
+        </div>`).join('');
+      $$('#owned-set-results .import-set-btn').forEach(btn =>
+        btn.onclick = () => importOwnedSet(btn.dataset.set, btn));
+    } catch (e) {
+      if (serial === setSearchSerial) box.innerHTML = `<div class="hint">search failed: ${escapeHtml(e)}</div>`;
+    }
+  }, 300);
+};
+
+window.importOwnedSet = async (setNum, btn) => {
+  const legoSet = ownedSetMatches.get(String(setNum));
+  if (!legoSet) return;
+  const ok = confirm(
+    `Add all ${legoSet.total_qty} pieces from ${legoSet.name} (${legoSet.set_num}) to Inventory?\n\n` +
+    'Existing matching pieces will be increased. Nothing is removed.'
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const result = await api(`/api/inventory/import-set/${encodeURIComponent(setNum)}`, { method: 'POST' });
+    toast(`added ${result.added_quantity} pieces from ${result.set_num}`);
+    $('#owned-set').value = '';
+    $('#owned-set-results').innerHTML = '<div class="hint">Set imported. Open Builds to see what the larger inventory can complete.</div>';
+    ownedSetMatches = new Map();
+    loadInventory();
+  } catch (e) {
+    toast('set import failed: ' + e, true);
+    btn.disabled = false;
+  }
+};
+
 /* manual add */
 let mTimer;
 $('#manual-part').oninput = e => {
@@ -549,6 +663,7 @@ async function loadBuilds() {
   box.innerHTML = '<div class="spin"></div>';
   try {
     const r = await api('/api/buildable?mode=' + mode);
+    buildSets = new Map(r.sets.map(s => [String(s.set_num), s]));
     if (!r.sets.length) { box.innerHTML = '<div class="empty">Nothing found - add more parts to your inventory.</div>'; return; }
     box.innerHTML = r.sets.map(s => {
       const full = s.pct >= 100, near = s.pct >= 90;
@@ -572,13 +687,32 @@ window.toggleMissing = async (el, setNum) => {
   box.style.display = 'block'; box.innerHTML = '<div class="spin"></div>';
   try {
     const rows = await api(`/api/buildable/${encodeURIComponent(setNum)}/missing?mode=` + mode);
-    box.innerHTML = '<div class="label mb">parts needed</div>' + rows.map(m => `
-      <div class="miss-row">
-        ${m.img_url ? `<img src="${safeImageUrl(m.img_url)}"/>` : '<div style="width:30px"></div>'}
-        ${m.rgb ? `<span class="swatch" style="background:#${escapeHtml(m.rgb)}"></span>` : ''}
-        <span>${escapeHtml(m.part_name || m.part_num)}${m.color_name ? ' · ' + escapeHtml(m.color_name) : ''}</span>
-        <span class="cnt ${m.have >= m.need ? 'have-ok' : 'have-no'}">${escapeHtml(m.have)}/${escapeHtml(m.need)}</span>
-      </div>`).join('');
+    const legoSet = buildSets.get(String(setNum));
+    const missingRows = rows.filter(m => Number(m.have) < Number(m.need));
+    const missingQty = missingRows.reduce((sum, m) => sum + Number(m.need) - Number(m.have), 0);
+    const preview = legoSet ? `<div class="set-preview">
+      <img src="${safeImageUrl(legoSet.img_url)}" alt="${escapeHtml(legoSet.name)}" onerror="this.style.visibility='hidden'"/>
+      <div>
+        <div class="label">assembled model</div>
+        <div class="title">${escapeHtml(legoSet.name)}</div>
+        <div class="meta">${escapeHtml(legoSet.set_num)} · ${escapeHtml(legoSet.year)} · ${escapeHtml(legoSet.theme || '')}<br/>
+          ${escapeHtml(legoSet.have)} of ${escapeHtml(legoSet.need)} required pieces available</div>
+        <div class="coverage">${escapeHtml(legoSet.pct)}% buildable</div>
+      </div>
+    </div>` : '';
+    if (!missingRows.length) {
+      box.innerHTML = preview + '<div class="build-complete">✓ Complete — your Inventory contains every required piece in this mode.</div>';
+      return;
+    }
+    box.innerHTML = preview +
+      `<div class="label mb">missing · ${missingRows.length} part types · ${missingQty} pieces</div>` +
+      '<div class="missing-list">' + missingRows.map(m => `
+        <div class="miss-row">
+          ${m.img_url ? `<img src="${safeImageUrl(m.img_url)}"/>` : '<div style="width:30px"></div>'}
+          ${m.rgb ? `<span class="swatch" style="background:#${escapeHtml(m.rgb)}"></span>` : ''}
+          <span>${escapeHtml(m.part_name || m.part_num)}${m.color_name ? ' · ' + escapeHtml(m.color_name) : ''}</span>
+          <span class="cnt have-no">${escapeHtml(m.have)}/${escapeHtml(m.need)}</span>
+        </div>`).join('') + '</div>';
   } catch (e) { box.innerHTML = `<div class="empty">${escapeHtml(e)}</div>`; }
 };
 
