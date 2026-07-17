@@ -1,4 +1,6 @@
 lego.db
+lego.db-shm
+lego.db-wal
 *__pycache__*
 CLAUDE.md
 .env

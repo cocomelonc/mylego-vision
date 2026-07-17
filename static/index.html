@@ -318,6 +318,16 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const api = (p, o) => fetch(p, o).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e.detail || r.status)));
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[ch]);
+const safeImageUrl = value => {
+  if (!value) return '';
+  try {
+    const url = new URL(String(value), window.location.href);
+    return ['http:', 'https:'].includes(url.protocol) ? escapeHtml(url.href) : '';
+  } catch { return ''; }
+};
 
 let scanFile = null, engine = 'fast', mode = 'strict';
 let selCand = null, selColor = null;
@@ -377,7 +387,7 @@ $('#scan-btn').onclick = async () => {
   try {
     const r = await api('/api/scan?engine=' + engine, { method: 'POST', body: fd });
     renderScan(r);
-  } catch (e) { box.innerHTML = `<div class="empty">scan failed: ${e}</div>`; }
+  } catch (e) { box.innerHTML = `<div class="empty">scan failed: ${escapeHtml(e)}</div>`; }
 };
 
 function renderScan(r) {
@@ -387,28 +397,28 @@ function renderScan(r) {
     h += '<div class="label mb">part candidates</div>';
     r.candidates.forEach((c, i) => {
       h += `<div class="cand" data-i="${i}">
-        <img src="${c.img_url || ''}" onerror="this.style.visibility='hidden'"/>
-        <div><div class="nm">${c.name || '?'}</div>
-        <div class="pn">${c.part_num}${c.in_db ? '' : ' · not in parts db'}${c.type !== 'part' ? ' · ' + c.type : ''}</div></div>
+        <img src="${safeImageUrl(c.img_url)}" onerror="this.style.visibility='hidden'"/>
+        <div><div class="nm">${escapeHtml(c.name || '?')}</div>
+        <div class="pn">${escapeHtml(c.part_num)}${c.in_db ? '' : ' · not in parts db'}${c.type !== 'part' ? ' · ' + escapeHtml(c.type) : ''}</div></div>
         <div class="score">${(c.score * 100).toFixed(0)}%</div></div>`;
     });
   } else {
-    h += `<div class="empty">no part recognized${r.brickognize_error ? ' · ' + r.brickognize_error : ''}</div>`;
+    h += `<div class="empty">no part recognized${r.brickognize_error ? ' · ' + escapeHtml(r.brickognize_error) : ''}</div>`;
   }
   if (r.colors && r.colors.length) {
     h += '<div class="label mb mt">detected color → nearest LEGO colors</div><div class="chips">';
     r.colors.forEach((c, i) => {
-      h += `<div class="chip" data-c="${i}"><span class="swatch" style="background:#${c.rgb}"></span>${c.name}</div>`;
+      h += `<div class="chip" data-c="${i}"><span class="swatch" style="background:#${escapeHtml(c.rgb)}"></span>${escapeHtml(c.name)}</div>`;
     });
     h += '</div>';
   }
   if (r.ollama) {
     h += '<div class="label mb mt">ollama vision says</div>';
-    if (r.ollama.error) h += `<div class="hint">unavailable: ${r.ollama.error}</div>`;
+    if (r.ollama.error) h += `<div class="hint">unavailable: ${escapeHtml(r.ollama.error)}</div>`;
     else h += `<div class="hint" style="font-size:.8rem;color:var(--text2)">
-      ${r.ollama.description || ''} ${r.ollama.stud_size ? '· ' + r.ollama.stud_size : ''}
-      ${r.ollama.color ? '· color: <b>' + r.ollama.color + '</b>' : ''}
-      ${r.ollama.guess_part ? '· guess: <span style="font-family:var(--mono);color:var(--cyan)">' + r.ollama.guess_part + '</span>' : ''}</div>`;
+      ${escapeHtml(r.ollama.description || '')} ${r.ollama.stud_size ? '· ' + escapeHtml(r.ollama.stud_size) : ''}
+      ${r.ollama.color ? '· color: <b>' + escapeHtml(r.ollama.color) + '</b>' : ''}
+      ${r.ollama.guess_part ? '· guess: <span style="font-family:var(--mono);color:var(--cyan)">' + escapeHtml(r.ollama.guess_part) + '</span>' : ''}</div>`;
   }
   h += `<div class="row mt">
     <input type="number" id="scan-qty" value="1" min="1" style="width:76px"/>
@@ -431,10 +441,14 @@ function renderScan(r) {
 
   $('#add-btn').onclick = async () => {
     try {
+      const qty = Number($('#scan-qty').value);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return toast('quantity must be a positive whole number', true);
+      }
       await api('/api/inventory', { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ part_num: selCand.part_num, color_id: selColor ? selColor.color_id : 0,
-                               quantity: +$('#scan-qty').value || 1 }) });
-      toast(`added ${$('#scan-qty').value}× ${selCand.part_num}`);
+                               quantity: qty }) });
+      toast(`added ${qty}× ${selCand.part_num}`);
       refreshCount();
     } catch (e) { toast('add failed: ' + e, true); }
   };
@@ -453,15 +467,20 @@ async function loadInventory() {
   $('#inv-empty').style.display = inv.items.length ? 'none' : 'block';
   $('#inv-grid').innerHTML = inv.items.map(it => `
     <div class="inv-item">
-      ${it.img_url ? `<img src="${it.img_url}"/>` : '<div class="noimg">▦</div>'}
-      <div style="flex:1;min-width:0"><div class="nm">${it.part_name || it.part_num}</div>
-      <div class="meta"><span class="swatch" style="background:#${it.rgb || '555'}"></span>
-      ${it.color_name || '?'} · ${it.part_num}</div></div>
-      <span class="qty-badge">×${it.quantity}</span>
-      <button class="del" onclick="delItem('${it.part_num}',${it.color_id})">✕</button>
+      ${it.img_url ? `<img src="${safeImageUrl(it.img_url)}"/>` : '<div class="noimg">▦</div>'}
+      <div style="flex:1;min-width:0"><div class="nm">${escapeHtml(it.part_name || it.part_num)}</div>
+      <div class="meta"><span class="swatch" style="background:#${escapeHtml(it.rgb || '555')}"></span>
+      ${escapeHtml(it.color_name || '?')} · ${escapeHtml(it.part_num)}</div></div>
+      <span class="qty-badge">×${escapeHtml(it.quantity)}</span>
+      <button class="del" data-part="${escapeHtml(it.part_num)}" data-color="${escapeHtml(it.color_id)}">✕</button>
     </div>`).join('');
+  $$('#inv-grid .del').forEach(btn => btn.onclick = () =>
+    delItem(btn.dataset.part, Number(btn.dataset.color)));
 }
-window.delItem = async (p, c) => { await api(`/api/inventory/${p}/${c}`, { method: 'DELETE' }); loadInventory(); };
+window.delItem = async (p, c) => {
+  await api(`/api/inventory/${encodeURIComponent(p)}/${c}`, { method: 'DELETE' });
+  loadInventory();
+};
 $('#clear-inv').onclick = async () => {
   if (!confirm('Clear the whole inventory?')) return;
   await api('/api/inventory/clear', { method: 'POST' }); loadInventory();
@@ -476,22 +495,31 @@ $('#manual-part').oninput = e => {
   mTimer = setTimeout(async () => {
     const rs = await api('/api/parts/search?q=' + encodeURIComponent(q));
     $('#manual-results').innerHTML = rs.slice(0, 6).map(p =>
-      `<div class="cand" onclick="manualAdd('${p.part_num}')">
-       <div><div class="nm">${p.name}</div><div class="pn">${p.part_num}</div></div>
+      `<div class="cand" data-part="${escapeHtml(p.part_num)}">
+       <div><div class="nm">${escapeHtml(p.name)}</div><div class="pn">${escapeHtml(p.part_num)}</div></div>
        <div class="score">+ add</div></div>`).join('');
+    $$('#manual-results .cand').forEach(el =>
+      el.onclick = () => manualAdd(el.dataset.part));
   }, 300);
 };
 window.manualAdd = async pn => {
-  const colors = await api('/api/colors');
-  const name = prompt('Color name (e.g. Red, Black, White):', 'Red');
-  if (name === null) return;
-  const col = colors.find(c => c.name.toLowerCase() === name.toLowerCase());
-  if (!col) return toast('unknown color: ' + name, true);
-  const qty = +prompt('Quantity:', '1') || 1;
-  await api('/api/inventory', { method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ part_num: pn, color_id: col.id, quantity: qty }) });
-  $('#manual-results').innerHTML = ''; $('#manual-part').value = '';
-  toast(`added ${qty}× ${pn} ${col.name}`); loadInventory();
+  try {
+    const colors = await api('/api/colors');
+    const name = prompt('Color name (e.g. Red, Black, White):', 'Red');
+    if (name === null) return;
+    const col = colors.find(c => c.name.toLowerCase() === name.toLowerCase());
+    if (!col) return toast('unknown color: ' + name, true);
+    const rawQty = prompt('Quantity:', '1');
+    if (rawQty === null) return;
+    const qty = Number(rawQty);
+    if (!Number.isInteger(qty) || qty < 1) {
+      return toast('quantity must be a positive whole number', true);
+    }
+    await api('/api/inventory', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ part_num: pn, color_id: col.id, quantity: qty }) });
+    $('#manual-results').innerHTML = ''; $('#manual-part').value = '';
+    toast(`added ${qty}× ${pn} ${col.name}`); loadInventory();
+  } catch (e) { toast('add failed: ' + e, true); }
 };
 
 /* ---------- builds ---------- */
@@ -503,30 +531,34 @@ async function loadBuilds() {
     if (!r.sets.length) { box.innerHTML = '<div class="empty">Nothing found - add more parts to your inventory.</div>'; return; }
     box.innerHTML = r.sets.map(s => {
       const full = s.pct >= 100, near = s.pct >= 90;
-      return `<div class="set-card" onclick="toggleMissing(this,'${s.set_num}')">
-        <img src="${s.img_url || ''}" onerror="this.style.visibility='hidden'"/>
+      return `<div class="set-card" data-set="${escapeHtml(s.set_num)}">
+        <img src="${safeImageUrl(s.img_url)}" onerror="this.style.visibility='hidden'"/>
         <div class="body">
-          <div class="nm">${s.name}</div>
-          <div class="meta">${s.set_num} · ${s.year} · ${s.theme || ''} · need ${s.need} pcs · you have ${s.have}</div>
+          <div class="nm">${escapeHtml(s.name)}</div>
+          <div class="meta">${escapeHtml(s.set_num)} · ${escapeHtml(s.year)} · ${escapeHtml(s.theme || '')} · need ${escapeHtml(s.need)} pcs · you have ${escapeHtml(s.have)}</div>
           <div class="bar ${full ? 'full' : ''}"><div style="width:${Math.min(s.pct, 100)}%"></div></div>
         </div>
-        <div class="pct ${full ? 'full' : near ? 'near' : ''}">${s.pct}%</div>
+        <div class="pct ${full ? 'full' : near ? 'near' : ''}">${escapeHtml(s.pct)}%</div>
       </div><div class="missing" style="display:none"></div>`;
     }).join('');
-  } catch (e) { box.innerHTML = `<div class="empty">${e}</div>`; }
+    $$('#builds-list .set-card').forEach(el =>
+      el.onclick = () => toggleMissing(el, el.dataset.set));
+  } catch (e) { box.innerHTML = `<div class="empty">${escapeHtml(e)}</div>`; }
 }
 window.toggleMissing = async (el, setNum) => {
   const box = el.nextElementSibling;
   if (box.style.display !== 'none') { box.style.display = 'none'; return; }
   box.style.display = 'block'; box.innerHTML = '<div class="spin"></div>';
-  const rows = await api(`/api/buildable/${encodeURIComponent(setNum)}/missing?mode=` + mode);
-  box.innerHTML = '<div class="label mb">parts needed</div>' + rows.map(m => `
-    <div class="miss-row">
-      ${m.img_url ? `<img src="${m.img_url}"/>` : '<div style="width:30px"></div>'}
-      ${m.rgb ? `<span class="swatch" style="background:#${m.rgb}"></span>` : ''}
-      <span>${m.part_name || m.part_num}${m.color_name ? ' · ' + m.color_name : ''}</span>
-      <span class="cnt ${m.have >= m.need ? 'have-ok' : 'have-no'}">${m.have}/${m.need}</span>
-    </div>`).join('');
+  try {
+    const rows = await api(`/api/buildable/${encodeURIComponent(setNum)}/missing?mode=` + mode);
+    box.innerHTML = '<div class="label mb">parts needed</div>' + rows.map(m => `
+      <div class="miss-row">
+        ${m.img_url ? `<img src="${safeImageUrl(m.img_url)}"/>` : '<div style="width:30px"></div>'}
+        ${m.rgb ? `<span class="swatch" style="background:#${escapeHtml(m.rgb)}"></span>` : ''}
+        <span>${escapeHtml(m.part_name || m.part_num)}${m.color_name ? ' · ' + escapeHtml(m.color_name) : ''}</span>
+        <span class="cnt ${m.have >= m.need ? 'have-ok' : 'have-no'}">${escapeHtml(m.have)}/${escapeHtml(m.need)}</span>
+      </div>`).join('');
+  } catch (e) { box.innerHTML = `<div class="empty">${escapeHtml(e)}</div>`; }
 };
 
 /* ---------- ideas ---------- */
@@ -537,15 +569,17 @@ $('#gen-ideas').onclick = async () => {
   try {
     const r = await api('/api/advise', { method: 'POST' });
     const ideas = r.ideas || [];
-    box.innerHTML = '<div class="ideas-grid">' + ideas.map(i => `
-      <div class="idea">
-        <div class="hd"><span class="emoji">${i.emoji || '🧱'}</span>
-          <span class="ttl">${i.title}</span>
-          <span class="diff ${i.difficulty || 'easy'}">${i.difficulty || ''}</span></div>
-        <p>${i.description || ''}</p>
-        <div class="parts">${(i.parts_used || []).map(p => `<span>${p}</span>`).join('')}</div>
-      </div>`).join('') + '</div>';
-  } catch (e) { box.innerHTML = `<div class="empty">${e}</div>`; }
+    box.innerHTML = '<div class="ideas-grid">' + ideas.map(i => {
+      const difficulty = ['easy', 'medium', 'hard'].includes(i.difficulty) ? i.difficulty : 'easy';
+      return `<div class="idea">
+        <div class="hd"><span class="emoji">${escapeHtml(i.emoji || '🧱')}</span>
+          <span class="ttl">${escapeHtml(i.title)}</span>
+          <span class="diff ${difficulty}">${escapeHtml(difficulty)}</span></div>
+        <p>${escapeHtml(i.description || '')}</p>
+        <div class="parts">${(i.parts_used || []).map(p => `<span>${escapeHtml(p)}</span>`).join('')}</div>
+      </div>`;
+    }).join('') + '</div>';
+  } catch (e) { box.innerHTML = `<div class="empty">${escapeHtml(e)}</div>`; }
   btn.disabled = false;
 };
 

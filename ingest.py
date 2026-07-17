@@ -3,6 +3,7 @@
 # then precomputes set_parts (parts per set, latest inventory, no spares)
 # so the buildability engine can run fast queries.
 # copyright (c) 2026 cocomelonc
+import argparse
 import csv
 import gzip
 import io
@@ -11,11 +12,20 @@ import os
 import sqlite3
 import sys
 import urllib.request
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("ingest")
 
-DB_PATH = os.getenv("LEGO_DB", "lego.db")
+_configured_db = Path(os.getenv("LEGO_DB", "lego.db"))
+DB_PATH = str(
+    _configured_db if _configured_db.is_absolute() else BASE_DIR / _configured_db
+)
 CDN = "https://cdn.rebrickable.com/media/downloads"
 
 # table -> (columns, primary key sql)
@@ -59,57 +69,81 @@ def load_table(con: sqlite3.Connection, name: str, gz: bytes) -> None:
 
 
 def precompute(con: sqlite3.Connection) -> None:
-    """set_parts: exact part needs per set (latest inventory version, spares excluded)."""
+    """Build set part requirements from the latest inventory, excluding spares."""
     log.info("precomputing set_parts ...")
-    con.executescript("""
-        CREATE INDEX IF NOT EXISTS idx_inv_set ON inventories(set_num, version);
-        CREATE INDEX IF NOT EXISTS idx_ip_inv ON inventory_parts(inventory_id);
+    try:
+        con.executescript("""
+            BEGIN IMMEDIATE;
+            CREATE INDEX IF NOT EXISTS idx_inv_set ON inventories(set_num, version);
+            CREATE INDEX IF NOT EXISTS idx_ip_inv ON inventory_parts(inventory_id);
 
-        DROP TABLE IF EXISTS set_parts;
-        CREATE TABLE set_parts AS
-        SELECT i.set_num,
-               ip.part_num,
-               ip.color_id,
-               SUM(ip.quantity) AS quantity
-        FROM inventory_parts ip
-        JOIN inventories i ON i.id = ip.inventory_id
-        JOIN (SELECT set_num, MIN(version) AS v FROM inventories GROUP BY set_num) lv
-             ON lv.set_num = i.set_num AND lv.v = i.version
-        WHERE ip.is_spare IN ('f', 'False')
-        GROUP BY i.set_num, ip.part_num, ip.color_id;
+            DROP TABLE IF EXISTS set_parts;
+            CREATE TABLE set_parts AS
+            SELECT i.set_num,
+                   ip.part_num,
+                   ip.color_id,
+                   SUM(ip.quantity) AS quantity
+            FROM inventory_parts ip
+            JOIN inventories i ON i.id = ip.inventory_id
+            JOIN (SELECT set_num, MAX(version) AS v FROM inventories GROUP BY set_num) lv
+                 ON lv.set_num = i.set_num AND lv.v = i.version
+            WHERE ip.is_spare IN ('f', 'False')
+            GROUP BY i.set_num, ip.part_num, ip.color_id;
 
-        CREATE INDEX idx_sp_set  ON set_parts(set_num);
-        CREATE INDEX idx_sp_part ON set_parts(part_num, color_id);
+            CREATE INDEX idx_sp_set  ON set_parts(set_num);
+            CREATE INDEX idx_sp_part ON set_parts(part_num, color_id);
 
-        DROP TABLE IF EXISTS set_totals;
-        CREATE TABLE set_totals AS
-        SELECT set_num, SUM(quantity) AS total_qty, COUNT(*) AS distinct_parts
-        FROM set_parts GROUP BY set_num;
-        CREATE UNIQUE INDEX idx_st_set ON set_totals(set_num);
+            DROP TABLE IF EXISTS set_totals;
+            CREATE TABLE set_totals AS
+            SELECT set_num, SUM(quantity) AS total_qty, COUNT(*) AS distinct_parts
+            FROM set_parts GROUP BY set_num;
+            CREATE UNIQUE INDEX idx_st_set ON set_totals(set_num);
 
-        -- user inventory lives here
-        CREATE TABLE IF NOT EXISTS my_parts (
-            part_num TEXT NOT NULL,
-            color_id INTEGER NOT NULL,
-            quantity INTEGER NOT NULL,
-            added_at TEXT DEFAULT (datetime('now')),
-            PRIMARY KEY (part_num, color_id)
-        );
-    """)
-    con.commit()
+            DROP TABLE IF EXISTS set_parts_any;
+            CREATE TABLE set_parts_any AS
+            SELECT set_num, part_num, SUM(quantity) AS quantity
+            FROM set_parts GROUP BY set_num, part_num;
+            CREATE INDEX idx_spa_set ON set_parts_any(set_num);
+            CREATE INDEX idx_spa_part ON set_parts_any(part_num);
+
+            -- user inventory lives here
+            CREATE TABLE IF NOT EXISTS my_parts (
+                part_num TEXT NOT NULL,
+                color_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                added_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (part_num, color_id)
+            );
+            COMMIT;
+        """)
+    except Exception:
+        con.rollback()
+        raise
     n = con.execute("SELECT COUNT(*) FROM set_parts").fetchone()[0]
     log.info("  set_parts: %d rows", n)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Build the local Rebrickable database")
+    parser.add_argument(
+        "--precompute-only",
+        action="store_true",
+        help="rebuild derived set tables from existing raw tables without downloading",
+    )
+    args = parser.parse_args(argv)
+
     con = sqlite3.connect(DB_PATH)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=OFF")
-    for name in TABLES:
-        load_table(con, name, download(name))
-    precompute(con)
-    con.execute("PRAGMA synchronous=NORMAL")
-    con.close()
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        if not args.precompute_only:
+            con.execute("PRAGMA synchronous=OFF")
+            for name in TABLES:
+                load_table(con, name, download(name))
+        precompute(con)
+        if not args.precompute_only:
+            con.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        con.close()
     log.info("done -> %s", DB_PATH)
 
 

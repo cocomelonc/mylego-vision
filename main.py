@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager, closing
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -18,14 +19,18 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("mylego")
 
-DB_PATH = os.getenv("LEGO_DB", "lego.db")
+_configured_db = Path(os.getenv("LEGO_DB", "lego.db"))
+DB_PATH = str(
+    _configured_db if _configured_db.is_absolute() else BASE_DIR / _configured_db
+)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://10.10.10.95:11434").rstrip("/")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "qwen3.6:27b")
 OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL", "qwen3.6:27b")
@@ -33,6 +38,10 @@ BRICKOGNIZE_URL = "https://api.brickognize.com/predict/"
 
 MIN_SET_PARTS = 5      # ignore 1-piece service packs
 THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+COLOR_POPULARITY_POWER = 0.25
+SPECIAL_FINISH_MARKERS = (
+    "chrome", "glitter", "metallic", "pearl", "satin", "speckle",
+)
 
 
 def db() -> sqlite3.Connection:
@@ -52,7 +61,8 @@ def ensure_derived() -> None:
             CREATE INDEX IF NOT EXISTS idx_ip_pc ON inventory_parts(part_num, color_id);
             CREATE TABLE IF NOT EXISTS my_parts (
                 part_num TEXT NOT NULL, color_id INTEGER NOT NULL,
-                quantity INTEGER NOT NULL, added_at TEXT DEFAULT (datetime('now')),
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                added_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (part_num, color_id));
         """)
         if "set_parts_any" not in have:
@@ -87,7 +97,9 @@ def dominant_color(img: Image.Image) -> tuple[int, int, int] | None:
     """Dominant color of the central region, background pixels filtered out."""
     im = img.convert("RGB").resize((96, 96))
     w, h = im.size
-    px = list(im.crop((w // 4, h // 4, 3 * w // 4, 3 * h // 4)).getdata())
+    crop = im.crop((w // 4, h // 4, 3 * w // 4, 3 * h // 4))
+    pixels = getattr(crop, "get_flattened_data", crop.getdata)
+    px = list(pixels())
     keep = []
     for r, g, b in px:
         mx, mn = max(r, g, b), min(r, g, b)
@@ -109,7 +121,8 @@ _palette: list[sqlite3.Row] = []
 
 def nearest_lego_colors(rgb: tuple[int, int, int], k: int = 3) -> list[dict]:
     """Nearest LEGO colors, restricted to colors that actually appear in real
-    sets (>=500 uses) so obscure Modulex/HO shades don't shadow plain Red."""
+    sets. A frequency prior resolves camera/lighting ambiguity in favor of
+    common solid colors; special finishes are excluded from photo matching."""
     global _palette
     if not _palette:
         with closing(db()) as con:
@@ -118,11 +131,25 @@ def nearest_lego_colors(rgb: tuple[int, int, int], k: int = 3) -> list[dict]:
                 FROM colors c JOIN set_parts sp ON sp.color_id = c.id
                 WHERE c.id >= 0 AND c.is_trans IN ('f','False')
                 GROUP BY c.id HAVING n >= 500""").fetchall()
+    mx, mn = max(rgb), min(rgb)
+    saturation = (mx - mn) / mx if mx else 0
+    forced = None
+    if saturation < 0.12 and mx > 170:
+        forced = "White"
+    elif saturation < 0.15 and mx < 90:
+        forced = "Black"
     scored = []
     for r in _palette:
+        if any(marker in r["name"].lower() for marker in SPECIAL_FINISH_MARKERS):
+            continue
         cr, cg, cb = _hex_to_rgb(r["rgb"])
         d = (cr - rgb[0]) ** 2 + (cg - rgb[1]) ** 2 + (cb - rgb[2]) ** 2
-        scored.append((d, {"color_id": r["id"], "name": r["name"], "rgb": r["rgb"]}))
+        score = d / max(r["n"], 1) ** COLOR_POPULARITY_POWER
+        if r["name"] == forced:
+            score = -1
+        scored.append((score, {
+            "color_id": r["id"], "name": r["name"], "rgb": r["rgb"],
+        }))
     scored.sort(key=lambda x: x[0])
     return [s[1] for s in scored[:k]]
 
@@ -148,10 +175,14 @@ def parse_json_loose(text: str):
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if m:
         text = m.group(1).strip()
-    start = min([i for i in (text.find("{"), text.find("[")) if i >= 0], default=-1)
-    if start > 0:
-        text = text[start:]
-    return json.loads(text)
+    decoder = json.JSONDecoder()
+    for start in (m.start() for m in re.finditer(r"[\[{]", text)):
+        try:
+            value, _ = decoder.raw_decode(text, start)
+            return value
+        except json.JSONDecodeError:
+            continue
+    raise json.JSONDecodeError("no valid JSON object or array found", text, 0)
 
 
 # ---------------------------------------------------------------- status
@@ -169,6 +200,7 @@ async def status():
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(f"{OLLAMA_HOST}/api/tags")
+            r.raise_for_status()
             models = [m["name"] for m in r.json().get("models", [])]
             ollama_ok = True
     except Exception:
@@ -181,7 +213,10 @@ async def status():
 # ---------------------------------------------------------------- scan (MVP 1)
 
 @app.post("/api/scan")
-async def scan(image: UploadFile = File(...), engine: str = Query("fast")):
+async def scan(
+    image: UploadFile = File(...),
+    engine: str = Query("fast", pattern="^(fast|deep)$"),
+):
     """Identify one LEGO part on a photo.
     fast = Brickognize + local dominant-color -> LEGO palette
     deep = fast + Ollama vision model second opinion"""
@@ -251,7 +286,7 @@ async def scan(image: UploadFile = File(...), engine: str = Query("fast")):
 class InvItem(BaseModel):
     part_num: str
     color_id: int
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
 
 
 @app.get("/api/inventory")
@@ -276,6 +311,8 @@ def add_inventory(item: InvItem):
     with closing(db()) as con:
         if not con.execute("SELECT 1 FROM parts WHERE part_num=?", (item.part_num,)).fetchone():
             raise HTTPException(404, f"unknown part {item.part_num}")
+        if not con.execute("SELECT 1 FROM colors WHERE id=?", (item.color_id,)).fetchone():
+            raise HTTPException(404, f"unknown color {item.color_id}")
         con.execute("""
             INSERT INTO my_parts (part_num, color_id, quantity) VALUES (?,?,?)
             ON CONFLICT(part_num, color_id)
@@ -302,7 +339,10 @@ def clear_inventory():
 
 
 @app.get("/api/parts/search")
-def search_parts(q: str = Query(..., min_length=2), limit: int = 20):
+def search_parts(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(20, ge=1, le=100),
+):
     with closing(db()) as con:
         rows = con.execute("""
             SELECT part_num, name FROM parts
@@ -324,7 +364,7 @@ def colors():
 
 @app.get("/api/buildable")
 def buildable(mode: str = Query("strict", pattern="^(strict|loose)$"),
-              limit: int = Query(30, le=100)):
+              limit: int = Query(30, ge=1, le=100)):
     """Rank real LEGO sets by how buildable they are from my_parts.
     strict = part+color must match, loose = shape only, any color."""
     with closing(db()) as con:
@@ -449,9 +489,9 @@ async def advise():
 
 # ---------------------------------------------------------------- static
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    return FileResponse(BASE_DIR / "static" / "index.html")

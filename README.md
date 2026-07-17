@@ -33,6 +33,13 @@ python3 ingest.py                     # downloads Rebrickable dumps -> lego.db (
 # open http://localhost:8500
 ```
 
+To rebuild only the derived buildability tables from an existing database
+(without downloading the dataset again), run:
+
+```sh
+python3 ingest.py --precompute-only
+```
+
 Config in `.env`:
 
 ```bash
@@ -60,6 +67,12 @@ fully-CPU later just point `OLLAMA_HOST` at a smaller local model
    your parts.
 
 Sample part photos to try: `test_images/*.jpg`.
+
+## Tests
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
 
 ## API
 
