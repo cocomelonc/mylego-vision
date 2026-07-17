@@ -4,6 +4,7 @@
 # copyright (c) 2026 cocomelonc
 # author: cocomelonc
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -12,11 +13,12 @@ import re
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -35,6 +37,10 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://10.10.10.95:11434").rstrip("/")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "qwen3.6:27b")
 OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL", "qwen3.6:27b")
 BRICKOGNIZE_URL = "https://api.brickognize.com/predict/"
+IDEA_PREVIEW_CACHE_LIMIT = 60
+IDEA_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+IDEA_PLACEHOLDER_URL = "/static/lego-placeholder.svg"
+REAL_IMAGE_HOSTS = {"cdn.rebrickable.com"}
 
 MIN_SET_PARTS = 5      # ignore 1-piece service packs
 THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -48,6 +54,33 @@ def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
+
+
+def ensure_idea_preview_table(con: sqlite3.Connection) -> None:
+    """Cache only verified real catalog images; discard the old AI-image schema."""
+    existing = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='idea_previews'"
+    ).fetchone()
+    if existing:
+        columns = {
+            row[1] for row in con.execute("PRAGMA table_info(idea_previews)")
+        }
+        required = {"id", "set_num", "source_url", "image", "content_type"}
+        if not required.issubset(columns):
+            con.execute("DROP TABLE idea_previews")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS idea_previews (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            set_num TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            image BLOB NOT NULL,
+            content_type TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
 
 
 def ensure_derived() -> None:
@@ -65,6 +98,7 @@ def ensure_derived() -> None:
                 added_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (part_num, color_id));
         """)
+        ensure_idea_preview_table(con)
         if "set_parts_any" not in have:
             log.info("building set_parts_any (color-agnostic) ...")
             con.executescript("""
@@ -515,6 +549,220 @@ def missing_parts(set_num: str, mode: str = Query("strict", pattern="^(strict|lo
 
 
 # ---------------------------------------------------------------- AI advisor
+
+class IdeaPreviewRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+    reference_set_num: str | None = Field(default=None, max_length=30)
+
+
+def _normalize_set_title(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _find_real_idea_set(
+    con: sqlite3.Connection, idea: IdeaPreviewRequest
+) -> sqlite3.Row | None:
+    title = idea.title.strip()
+    normalized_title = _normalize_set_title(title)
+    if not normalized_title:
+        return None
+
+    if idea.reference_set_num:
+        set_num = idea.reference_set_num.strip()
+        referenced = con.execute(
+            """SELECT set_num, name, img_url FROM sets
+               WHERE set_num=? AND img_url != ''""",
+            (set_num,),
+        ).fetchone()
+        if referenced and (
+            set_num.lower() in title.lower()
+            or _normalize_set_title(referenced["name"]) == normalized_title
+        ):
+            return referenced
+
+    return con.execute(
+        """SELECT set_num, name, img_url FROM sets
+           WHERE LOWER(TRIM(name)) = LOWER(?) AND img_url != ''
+           ORDER BY year DESC, num_parts DESC
+           LIMIT 1""",
+        (title,),
+    ).fetchone()
+
+
+def _placeholder_preview(reason: str = "no_real_match") -> dict:
+    return {
+        "found": False,
+        "preview_url": IDEA_PLACEHOLDER_URL,
+        "download_url": None,
+        "reason": reason,
+    }
+
+
+def _idea_preview_payload(row: sqlite3.Row, cached: bool) -> dict:
+    preview_id = row["id"]
+    return {
+        "found": True,
+        "id": preview_id,
+        "set_num": row["set_num"],
+        "set_name": row["title"],
+        "width": row["width"],
+        "height": row["height"],
+        "preview_url": f"/api/ideas/preview/{preview_id}",
+        "download_url": f"/api/ideas/preview/{preview_id}/download",
+        "cached": cached,
+    }
+
+
+async def _download_real_idea_preview(
+    source_url: str,
+) -> tuple[bytes, str, int, int]:
+    parsed = urlparse(source_url)
+    if parsed.scheme != "https" or parsed.hostname not in REAL_IMAGE_HOSTS:
+        raise ValueError("unsupported real-image source")
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        response = await client.get(
+            source_url,
+            headers={
+                "Accept": "image/jpeg,image/png,image/webp",
+                "User-Agent": "mylego-vision/1.0",
+            },
+        )
+        response.raise_for_status()
+        raw = response.content
+
+    if not raw or len(raw) > IDEA_PREVIEW_MAX_BYTES:
+        raise ValueError("preview image is empty or too large")
+
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(raw)) as image:
+            width, height = image.size
+            image_format = (image.format or "").upper()
+    except (OSError, ValueError) as exc:
+        raise ValueError("preview provider returned an invalid image") from exc
+
+    content_types = {
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "WEBP": "image/webp",
+    }
+    content_type = content_types.get(image_format)
+    if not content_type or width < 256 or height < 256:
+        raise ValueError("preview provider returned an unsupported image")
+    return raw, content_type, width, height
+
+
+@app.post("/api/ideas/preview")
+async def create_idea_preview(idea: IdeaPreviewRequest):
+    with closing(db()) as con:
+        ensure_idea_preview_table(con)
+        con.commit()
+        lego_set = _find_real_idea_set(con, idea)
+        if not lego_set:
+            return _placeholder_preview()
+        preview_id = hashlib.sha256(
+            lego_set["img_url"].encode("utf-8")
+        ).hexdigest()[:24]
+        cached = con.execute(
+            """SELECT id, title, set_num, width, height
+               FROM idea_previews WHERE id=?""",
+            (preview_id,),
+        ).fetchone()
+    if cached:
+        return _idea_preview_payload(cached, cached=True)
+
+    try:
+        raw, content_type, width, height = await _download_real_idea_preview(
+            lego_set["img_url"]
+        )
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        log.warning("real idea preview download failed: %s", exc)
+        return _placeholder_preview("real_image_unavailable")
+
+    with closing(db()) as con:
+        ensure_idea_preview_table(con)
+        con.execute(
+            """INSERT OR REPLACE INTO idea_previews
+                   (id, title, set_num, source_url, image,
+                    content_type, width, height)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                preview_id,
+                lego_set["name"],
+                lego_set["set_num"],
+                lego_set["img_url"],
+                sqlite3.Binary(raw),
+                content_type,
+                width,
+                height,
+            ),
+        )
+        con.execute(
+            """DELETE FROM idea_previews
+               WHERE id NOT IN (
+                   SELECT id FROM idea_previews
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ?
+               )""",
+            (IDEA_PREVIEW_CACHE_LIMIT,),
+        )
+        con.commit()
+        stored = con.execute(
+            """SELECT id, title, set_num, width, height
+               FROM idea_previews WHERE id=?""",
+            (preview_id,),
+        ).fetchone()
+    return _idea_preview_payload(stored, cached=False)
+
+
+def _stored_idea_preview(preview_id: str) -> sqlite3.Row:
+    if not re.fullmatch(r"[0-9a-f]{24}", preview_id):
+        raise HTTPException(404, "preview not found")
+    with closing(db()) as con:
+        ensure_idea_preview_table(con)
+        con.commit()
+        row = con.execute(
+            """SELECT image, content_type, set_num
+               FROM idea_previews WHERE id=?""",
+            (preview_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "preview not found")
+    return row
+
+
+@app.get("/api/ideas/preview/{preview_id}")
+def get_idea_preview(preview_id: str):
+    row = _stored_idea_preview(preview_id)
+    return Response(
+        content=bytes(row["image"]),
+        media_type=row["content_type"],
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@app.get("/api/ideas/preview/{preview_id}/download")
+def download_idea_preview(preview_id: str):
+    row = _stored_idea_preview(preview_id)
+    extension = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }[row["content_type"]]
+    safe_set_num = re.sub(r"[^A-Za-z0-9_-]", "_", row["set_num"])
+    return Response(
+        content=bytes(row["image"]),
+        media_type=row["content_type"],
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="lego-set-{safe_set_num}.{extension}"'
+            ),
+            "Cache-Control": "public, max-age=31536000, immutable",
+        },
+    )
+
 
 @app.post("/api/advise")
 async def advise():

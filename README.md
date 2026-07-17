@@ -73,7 +73,11 @@ parts that are still missing. `exact color` / `any color` modes.
 
 ![img](./img/builds.png)    
 
-**AI Ideas** - the local LLM suggests original small MOCs using only your parts.    
+**AI Ideas** - the local LLM suggests original small MOCs using only your parts.
+If an idea exactly matches a real set in the local Rebrickable catalog, its original
+CDN image is downloaded, verified, cached in SQLite, and offered for download. An
+original MOC with no verified real photo gets a local LEGO-style placeholder instead;
+the app never generates a replacement image. The cache keeps the latest 60 real images.
 
 ![img](./img/ideas.png)    
 
@@ -96,6 +100,8 @@ Sample part photos to try: `test_images/*.jpg`.
 | `GET /api/buildable?mode=strict\|loose` | ranked buildable sets |
 | `GET /api/buildable/{set}/missing` | missing-parts diff for a set |
 | `POST /api/advise` | LLM MOC ideas from inventory |
+| `POST /api/ideas/preview` | resolve/cache a verified real set image or placeholder |
+| `GET /api/ideas/preview/{id}` | view or download a cached preview |
 | `GET /api/status` | db + ollama health |
 
 ## Data & credits
