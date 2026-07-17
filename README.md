@@ -1,8 +1,10 @@
 # mylego · vision
 
+![img](./img/builds.png)    
+
 What can I build from my pile of LEGO parts?
-Scan parts with computer vision → keep an inventory → rank every real LEGO set
-by buildability → ask a local LLM for creative MOC ideas.
+Scan parts with computer vision -> keep an inventory -> rank every real LEGO set
+by buildability -> ask a local LLM for creative MOC ideas.
 
 ## Architecture
 
@@ -55,16 +57,21 @@ fully-CPU later just point `OLLAMA_HOST` at a smaller local model
 
 ## Workflow
 
-1. **Scan** - one part on a white background (start simple: 1 part → 5-10 laid
-   out → the full pile later). `fast` = Brickognize + color detect,
-   `deep` = also asks the Ollama vision model.
-2. **Inventory** - confirmed parts land in `my_parts` (part_num + color + qty).
-   Manual add by part number/name also works.
-3. **Builds** - every real LEGO set ranked by coverage: 100% buildable,
-   90%+ near-buildable, etc. Click a set to see which parts are missing.
-   `exact color` / `any color` modes.
-4. **AI Ideas** - the local LLM suggests original small MOCs using only
-   your parts.
+**Scan** - one part on a white background (start simple: 1 part -> 5-10 laid out -> the full pile later). `fast` = Brickognize + color detect, `deep` = also asks the Ollama vision model.    
+
+![img](./img/scan.png)    
+
+**Inventory** - confirmed parts land in `my_parts` (part_num + color + qty). Manual add by part number/name also works.    
+
+![img](./img/inventory.png)        
+
+**Builds** - every real LEGO set ranked by coverage: 100% buildable, 90%+ near-buildable, etc. Click a set to see which parts are missing. `exact color` / `any color` modes.     
+
+![img](./img/builds.png)    
+
+**AI Ideas** - the local LLM suggests original small MOCs using only your parts.    
+
+![img](./img/ideas.png)    
 
 Sample part photos to try: `test_images/*.jpg`.
 
