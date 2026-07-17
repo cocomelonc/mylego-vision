@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mylego · vision</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <style>
+    :root {
+      --bg:      #15121E;
+      --bg2:     #1E1B2E;
+      --bg3:     #272440;
+      --bg4:     #312D52;
+      --sep:     #3D3860;
+      --text:    #EAE6FF;
+      --text2:   rgba(234,230,255,.65);
+      --dim:     #8A85A8;
+      --purple:  #B57BFF;
+      --blue:    #78B4FF;
+      --green:   #56D98A;
+      --red:     #FF7875;
+      --yellow:  #FFD166;
+      --orange:  #FFB347;
+      --cyan:    #72D9F5;
+      --font:    -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+      --mono:    'SF Mono', 'Fira Code', 'Courier New', monospace;
+      --radius:  10px;
+      --radius-lg: 14px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg); color: var(--text); font-family: var(--font);
+      min-height: 100vh; -webkit-font-smoothing: antialiased;
+    }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--sep); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--purple); }
+
+    .wrap { max-width: 1060px; margin: 0 auto; padding: 0 20px 60px; }
+
+    /* header */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 22px 0 18px; border-bottom: 1px solid var(--sep); margin-bottom: 26px;
+    }
+    .logo {
+      background: linear-gradient(120deg, var(--purple) 0%, var(--cyan) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      font-weight: 700; font-size: 1.15rem; letter-spacing: -0.03em;
+    }
+    .status { display: flex; gap: 16px; align-items: center; font-size: .72rem; color: var(--dim); font-family: var(--mono); }
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+    .dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(86,217,138,.6); }
+    .dot.bad { background: var(--red); }
+
+    .label {
+      font-size: .6rem; font-weight: 600; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--dim);
+    }
+
+    /* tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 26px; flex-wrap: wrap; }
+    .tab {
+      padding: 9px 20px; border-radius: var(--radius); border: 1px solid var(--sep);
+      background: var(--bg2); color: var(--text2); font-size: .85rem; font-weight: 500;
+      cursor: pointer; font-family: var(--font); transition: all .18s;
+    }
+    .tab:hover { border-color: rgba(181,123,255,.4); color: var(--text); }
+    .tab.active {
+      background: rgba(181,123,255,.12); border-color: rgba(181,123,255,.5);
+      color: var(--purple);
+    }
+
+    .panel { display: none; }
+    .panel.active { display: block; animation: fadein .25s ease; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+    .card {
+      background: var(--bg2); border: 1px solid var(--sep);
+      border-radius: var(--radius-lg); padding: 20px;
+    }
+
+    /* drop zone */
+    .drop {
+      border: 1.5px dashed var(--sep); border-radius: var(--radius-lg);
+      padding: 44px 20px; text-align: center; cursor: pointer; transition: all .2s;
+      color: var(--dim); font-size: .9rem;
+    }
+    .drop:hover, .drop.over { border-color: var(--purple); background: rgba(181,123,255,.05); color: var(--text2); }
+    .drop .big { font-size: 2rem; margin-bottom: 10px; }
+
+    .scan-grid { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
+    @media (max-width: 800px) { .scan-grid { grid-template-columns: 1fr; } }
+    .preview-img { width: 100%; border-radius: var(--radius); border: 1px solid var(--sep); display: block; }
+
+    .btn {
+      height: 42px; padding: 0 20px; border-radius: var(--radius); cursor: pointer;
+      font-family: var(--font); font-size: .85rem; font-weight: 500; white-space: nowrap;
+      background: rgba(181,123,255,.1); border: 1px solid rgba(181,123,255,.3); color: var(--purple);
+      transition: all .2s;
+    }
+    .btn:hover:not(:disabled) {
+      background: rgba(181,123,255,.18); border-color: rgba(181,123,255,.6);
+      box-shadow: 0 0 18px rgba(181,123,255,.12);
+    }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn.green { background: rgba(86,217,138,.08); border-color: rgba(86,217,138,.3); color: var(--green); }
+    .btn.green:hover:not(:disabled) { background: rgba(86,217,138,.16); border-color: rgba(86,217,138,.6); box-shadow: 0 0 18px rgba(86,217,138,.1); }
+    .btn.ghost { background: transparent; border-color: var(--sep); color: var(--dim); }
+    .btn.ghost:hover:not(:disabled) { color: var(--red); border-color: rgba(255,120,117,.4); box-shadow: none; }
+    .btn.sm { height: 30px; padding: 0 12px; font-size: .75rem; }
+
+    /* toggle group */
+    .toggle { display: inline-flex; border: 1px solid var(--sep); border-radius: var(--radius); overflow: hidden; }
+    .toggle button {
+      padding: 7px 16px; background: transparent; border: none; color: var(--dim);
+      font-size: .78rem; cursor: pointer; font-family: var(--font); transition: all .15s;
+    }
+    .toggle button.on { background: rgba(181,123,255,.14); color: var(--purple); }
+
+    /* candidate cards */
+    .cand {
+      display: flex; align-items: center; gap: 14px; padding: 12px 14px;
+      background: var(--bg3); border: 1px solid var(--sep); border-radius: var(--radius);
+      margin-bottom: 10px; cursor: pointer; transition: all .15s;
+    }
+    .cand:hover { border-color: rgba(181,123,255,.4); transform: translateY(-1px); }
+    .cand.sel { border-color: var(--purple); background: rgba(181,123,255,.08); }
+    .cand img { width: 52px; height: 52px; object-fit: contain; border-radius: 6px; background: #fff; }
+    .cand .nm { font-size: .85rem; font-weight: 500; }
+    .cand .pn { font-family: var(--mono); font-size: .7rem; color: var(--cyan); margin-top: 2px; }
+    .score { margin-left: auto; font-family: var(--mono); font-size: .72rem; color: var(--green); }
+
+    /* color chips */
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px;
+      border: 1px solid var(--sep); border-radius: 20px; background: var(--bg3);
+      font-size: .75rem; cursor: pointer; color: var(--text2); transition: all .15s;
+    }
+    .chip:hover { border-color: rgba(181,123,255,.5); }
+    .chip.sel { border-color: var(--purple); color: var(--text); background: rgba(181,123,255,.1); }
+    .swatch { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(255,255,255,.25); }
+
+    input[type=number], input[type=text], select {
+      background: var(--bg3); border: 1px solid var(--sep); border-radius: var(--radius);
+      color: var(--text); font-family: var(--font); font-size: .85rem; padding: 9px 12px;
+      transition: border-color .2s;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px rgba(181,123,255,.15); }
+
+    /* inventory grid */
+    .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+    .inv-item {
+      display: flex; align-items: center; gap: 12px; padding: 12px;
+      background: var(--bg2); border: 1px solid var(--sep); border-radius: var(--radius);
+    }
+    .inv-item img { width: 46px; height: 46px; object-fit: contain; background: #fff; border-radius: 6px; }
+    .inv-item .noimg { width: 46px; height: 46px; border-radius: 6px; background: var(--bg4); display:flex; align-items:center; justify-content:center; font-size:1.2rem; }
+    .inv-item .nm { font-size: .78rem; font-weight: 500; line-height: 1.25; }
+    .inv-item .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: .68rem; color: var(--dim); font-family: var(--mono); }
+    .qty-badge { margin-left: auto; font-family: var(--mono); font-size: .85rem; color: var(--yellow); font-weight: 600; }
+    .del { background: none; border: none; color: var(--dim); cursor: pointer; font-size: .95rem; padding: 4px; }
+    .del:hover { color: var(--red); }
+
+    /* build cards */
+    .set-card {
+      display: flex; gap: 16px; padding: 14px 16px; background: var(--bg2);
+      border: 1px solid var(--sep); border-radius: var(--radius); margin-bottom: 12px;
+      cursor: pointer; transition: all .15s;
+    }
+    .set-card:hover { border-color: rgba(181,123,255,.4); transform: translateY(-1px); box-shadow: 0 4px 20px rgba(181,123,255,.07); }
+    .set-card img { width: 88px; height: 66px; object-fit: contain; background: #fff; border-radius: 6px; flex-shrink: 0; }
+    .set-card .body { flex: 1; min-width: 0; }
+    .set-card .nm { font-size: .9rem; font-weight: 600; }
+    .set-card .meta { font-size: .7rem; color: var(--dim); font-family: var(--mono); margin: 3px 0 8px; }
+    .bar { height: 6px; background: var(--bg4); border-radius: 3px; overflow: hidden; }
+    .bar > div { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--purple), var(--cyan)); transition: width .4s; }
+    .bar.full > div { background: linear-gradient(90deg, var(--green), var(--cyan)); }
+    .pct { font-family: var(--mono); font-size: 1rem; font-weight: 700; align-self: center; min-width: 64px; text-align: right; }
+    .pct.full { color: var(--green); }
+    .pct.near { color: var(--yellow); }
+
+    .missing { margin: -4px 0 14px; padding: 14px 16px; background: var(--bg3); border: 1px solid var(--sep); border-radius: var(--radius); }
+    .miss-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: .78rem; border-bottom: 1px solid rgba(61,56,96,.5); }
+    .miss-row:last-child { border-bottom: none; }
+    .miss-row img { width: 30px; height: 30px; object-fit: contain; background: #fff; border-radius: 4px; }
+    .miss-row .cnt { margin-left: auto; font-family: var(--mono); font-size: .72rem; }
+    .have-ok { color: var(--green); } .have-no { color: var(--red); }
+
+    /* idea cards */
+    .ideas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+    .idea {
+      background: var(--bg2); border: 1px solid var(--sep); border-radius: var(--radius-lg);
+      padding: 18px;
+    }
+    .idea .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .idea .emoji { font-size: 1.5rem; }
+    .idea .ttl { font-weight: 600; font-size: .95rem; flex: 1; }
+    .diff { font-size: .62rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: .08em; padding: 3px 8px; border-radius: 20px; }
+    .diff.easy { color: var(--green); background: rgba(86,217,138,.1); }
+    .diff.medium { color: var(--yellow); background: rgba(255,209,102,.1); }
+    .diff.hard { color: var(--red); background: rgba(255,120,117,.1); }
+    .idea p { font-size: .8rem; color: var(--text2); line-height: 1.5; margin-bottom: 12px; }
+    .idea .parts { display: flex; flex-wrap: wrap; gap: 5px; }
+    .idea .parts span {
+      font-size: .66rem; font-family: var(--mono); color: var(--cyan);
+      background: rgba(114,217,245,.07); border: 1px solid rgba(114,217,245,.2);
+      padding: 3px 8px; border-radius: 4px;
+    }
+
+    .empty { text-align: center; color: var(--dim); padding: 50px 0; font-size: .88rem; }
+    .spin {
+      width: 26px; height: 26px; border: 2.5px solid var(--sep); border-top-color: var(--purple);
+      border-radius: 50%; animation: rot .7s linear infinite; margin: 30px auto;
+    }
+    @keyframes rot { to { transform: rotate(360deg); } }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .mt { margin-top: 16px; } .mb { margin-bottom: 12px; }
+    .hint { font-size: .72rem; color: var(--dim); line-height: 1.5; }
+    .toast {
+      position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
+      background: var(--bg3); border: 1px solid var(--green); border-radius: var(--radius);
+      color: var(--green); font-size: .82rem; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 50;
+    }
+    .toast.show { opacity: 1; }
+    .toast.err { border-color: var(--red); color: var(--red); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">mylego · vision</div>
+    <div class="status">
+      <span><span class="dot" id="dot-db"></span><span id="st-db">db</span></span>
+      <span><span class="dot" id="dot-ai"></span><span id="st-ai">ollama</span></span>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="scan">Scan</button>
+    <button class="tab" data-tab="inventory">Inventory <span id="inv-count" style="color:var(--yellow)"></span></button>
+    <button class="tab" data-tab="builds">Builds</button>
+    <button class="tab" data-tab="ideas">AI Ideas</button>
+  </div>
+
+  <!-- ============ SCAN ============ -->
+  <div class="panel active" id="panel-scan">
+    <div class="scan-grid">
+      <div>
+        <div class="drop" id="drop">
+          <div class="big">◨</div>
+          <div>Drop a photo of one LEGO part<br/>or click to browse</div>
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+        <div id="preview-box" class="mt" style="display:none">
+          <img class="preview-img" id="preview" alt="preview"/>
+          <div class="row mt">
+            <div class="toggle" id="engine">
+              <button class="on" data-v="fast">fast</button>
+              <button data-v="deep">deep · ollama vision</button>
+            </div>
+            <button class="btn" id="scan-btn">Identify part</button>
+          </div>
+          <div class="hint mt">fast = Brickognize CV + color detection · deep also asks the vision LLM on your GPU</div>
+        </div>
+      </div>
+      <div>
+        <div id="scan-results">
+          <div class="empty">Scan results will appear here.<br/><br/>
+          <span class="hint">Tip: start with one part on a white background.<br/>Try the sample photos in <code style="color:var(--cyan)">test_images/</code></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ INVENTORY ============ -->
+  <div class="panel" id="panel-inventory">
+    <div class="row mb" style="justify-content:space-between">
+      <div class="label">my parts · <span id="inv-total">0</span> pieces</div>
+      <div class="row">
+        <input type="text" id="manual-part" placeholder="add manually: part # or name" style="width:230px"/>
+        <button class="btn ghost sm" id="clear-inv">clear all</button>
+      </div>
+    </div>
+    <div id="manual-results"></div>
+    <div class="inv-grid" id="inv-grid"></div>
+    <div class="empty" id="inv-empty">Inventory is empty - scan some parts first.</div>
+  </div>
+
+  <!-- ============ BUILDS ============ -->
+  <div class="panel" id="panel-builds">
+    <div class="row mb" style="justify-content:space-between">
+      <div class="label">what can I build · real LEGO sets ranked by coverage</div>
+      <div class="toggle" id="mode">
+        <button class="on" data-v="strict">exact color</button>
+        <button data-v="loose">any color</button>
+      </div>
+    </div>
+    <div id="builds-list"><div class="empty">Add parts to your inventory first.</div></div>
+  </div>
+
+  <!-- ============ IDEAS ============ -->
+  <div class="panel" id="panel-ideas">
+    <div class="row mb" style="justify-content:space-between">
+      <div class="label">creative MOC ideas · generated by <span id="ideas-model" style="color:var(--cyan)">ollama</span></div>
+      <button class="btn" id="gen-ideas">✦ Generate ideas</button>
+    </div>
+    <div id="ideas-list"><div class="empty">The local LLM will invent things to build from your actual parts.</div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const api = (p, o) => fetch(p, o).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e.detail || r.status)));
+
+let scanFile = null, engine = 'fast', mode = 'strict';
+let selCand = null, selColor = null;
+
+function toast(msg, err=false) {
+  const t = $('#toast');
+  t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => t.className = 'toast', 2600);
+}
+
+/* tabs */
+$$('.tab').forEach(b => b.onclick = () => {
+  $$('.tab').forEach(x => x.classList.remove('active'));
+  $$('.panel').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  $('#panel-' + b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'inventory') loadInventory();
+  if (b.dataset.tab === 'builds') loadBuilds();
+});
+
+/* toggles */
+$('#engine').onclick = e => { if (e.target.dataset.v) { engine = e.target.dataset.v;
+  $$('#engine button').forEach(b => b.classList.toggle('on', b === e.target)); } };
+$('#mode').onclick = e => { if (e.target.dataset.v) { mode = e.target.dataset.v;
+  $$('#mode button').forEach(b => b.classList.toggle('on', b === e.target)); loadBuilds(); } };
+
+/* status */
+api('/api/status').then(s => {
+  const dbOk = s.db.set_parts > 0;
+  $('#dot-db').className = 'dot ' + (dbOk ? 'ok' : 'bad');
+  $('#st-db').textContent = dbOk ? `${(s.db.sets||0).toLocaleString()} sets · ${(s.db.parts||0).toLocaleString()} parts` : 'db: run ingest.py';
+  $('#dot-ai').className = 'dot ' + (s.ollama.ok ? 'ok' : 'bad');
+  $('#st-ai').textContent = s.ollama.ok ? s.ollama.vision_model : 'ollama offline';
+  $('#ideas-model').textContent = s.ollama.text_model;
+}).catch(() => {});
+
+/* ---------- scan ---------- */
+const drop = $('#drop'), fileEl = $('#file');
+drop.onclick = () => fileEl.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); };
+fileEl.onchange = () => fileEl.files[0] && setFile(fileEl.files[0]);
+
+function setFile(f) {
+  scanFile = f;
+  $('#preview').src = URL.createObjectURL(f);
+  $('#preview-box').style.display = 'block';
+}
+
+$('#scan-btn').onclick = async () => {
+  if (!scanFile) return;
+  const box = $('#scan-results');
+  box.innerHTML = '<div class="spin"></div><div class="empty" style="padding:0">identifying part' + (engine==='deep' ? ' + asking vision LLM…' : '…') + '</div>';
+  const fd = new FormData(); fd.append('image', scanFile);
+  try {
+    const r = await api('/api/scan?engine=' + engine, { method: 'POST', body: fd });
+    renderScan(r);
+  } catch (e) { box.innerHTML = `<div class="empty">scan failed: ${e}</div>`; }
+};
+
+function renderScan(r) {
+  selCand = null; selColor = null;
+  let h = '';
+  if (r.candidates.length) {
+    h += '<div class="label mb">part candidates</div>';
+    r.candidates.forEach((c, i) => {
+      h += `<div class="cand" data-i="${i}">
+        <img src="${c.img_url || ''}" onerror="this.style.visibility='hidden'"/>
+        <div><div class="nm">${c.name || '?'}</div>
+        <div class="pn">${c.part_num}${c.in_db ? '' : ' · not in parts db'}${c.type !== 'part' ? ' · ' + c.type : ''}</div></div>
+        <div class="score">${(c.score * 100).toFixed(0)}%</div></div>`;
+    });
+  } else {
+    h += `<div class="empty">no part recognized${r.brickognize_error ? ' · ' + r.brickognize_error : ''}</div>`;
+  }
+  if (r.colors && r.colors.length) {
+    h += '<div class="label mb mt">detected color → nearest LEGO colors</div><div class="chips">';
+    r.colors.forEach((c, i) => {
+      h += `<div class="chip" data-c="${i}"><span class="swatch" style="background:#${c.rgb}"></span>${c.name}</div>`;
+    });
+    h += '</div>';
+  }
+  if (r.ollama) {
+    h += '<div class="label mb mt">ollama vision says</div>';
+    if (r.ollama.error) h += `<div class="hint">unavailable: ${r.ollama.error}</div>`;
+    else h += `<div class="hint" style="font-size:.8rem;color:var(--text2)">
+      ${r.ollama.description || ''} ${r.ollama.stud_size ? '· ' + r.ollama.stud_size : ''}
+      ${r.ollama.color ? '· color: <b>' + r.ollama.color + '</b>' : ''}
+      ${r.ollama.guess_part ? '· guess: <span style="font-family:var(--mono);color:var(--cyan)">' + r.ollama.guess_part + '</span>' : ''}</div>`;
+  }
+  h += `<div class="row mt">
+    <input type="number" id="scan-qty" value="1" min="1" style="width:76px"/>
+    <button class="btn green" id="add-btn" disabled>+ Add to inventory</button>
+  </div>`;
+  $('#scan-results').innerHTML = h;
+
+  $$('.cand').forEach(el => el.onclick = () => {
+    $$('.cand').forEach(x => x.classList.remove('sel'));
+    el.classList.add('sel'); selCand = r.candidates[+el.dataset.i]; checkAdd(r);
+  });
+  $$('.chip').forEach(el => el.onclick = () => {
+    $$('.chip').forEach(x => x.classList.remove('sel'));
+    el.classList.add('sel'); selColor = r.colors[+el.dataset.c]; checkAdd(r);
+  });
+  // auto-select top candidate and top color
+  const c0 = $('.cand'), ch0 = $('.chip');
+  if (c0) c0.click();
+  if (ch0) ch0.click();
+
+  $('#add-btn').onclick = async () => {
+    try {
+      await api('/api/inventory', { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ part_num: selCand.part_num, color_id: selColor ? selColor.color_id : 0,
+                               quantity: +$('#scan-qty').value || 1 }) });
+      toast(`added ${$('#scan-qty').value}× ${selCand.part_num}`);
+      refreshCount();
+    } catch (e) { toast('add failed: ' + e, true); }
+  };
+}
+function checkAdd(r) { $('#add-btn').disabled = !(selCand && selCand.in_db); }
+
+/* ---------- inventory ---------- */
+async function refreshCount() {
+  try { const inv = await api('/api/inventory');
+    $('#inv-count').textContent = inv.total ? `(${inv.total})` : ''; } catch {}
+}
+async function loadInventory() {
+  const inv = await api('/api/inventory');
+  $('#inv-total').textContent = inv.total.toLocaleString();
+  $('#inv-count').textContent = inv.total ? `(${inv.total})` : '';
+  $('#inv-empty').style.display = inv.items.length ? 'none' : 'block';
+  $('#inv-grid').innerHTML = inv.items.map(it => `
+    <div class="inv-item">
+      ${it.img_url ? `<img src="${it.img_url}"/>` : '<div class="noimg">▦</div>'}
+      <div style="flex:1;min-width:0"><div class="nm">${it.part_name || it.part_num}</div>
+      <div class="meta"><span class="swatch" style="background:#${it.rgb || '555'}"></span>
+      ${it.color_name || '?'} · ${it.part_num}</div></div>
+      <span class="qty-badge">×${it.quantity}</span>
+      <button class="del" onclick="delItem('${it.part_num}',${it.color_id})">✕</button>
+    </div>`).join('');
+}
+window.delItem = async (p, c) => { await api(`/api/inventory/${p}/${c}`, { method: 'DELETE' }); loadInventory(); };
+$('#clear-inv').onclick = async () => {
+  if (!confirm('Clear the whole inventory?')) return;
+  await api('/api/inventory/clear', { method: 'POST' }); loadInventory();
+};
+
+/* manual add */
+let mTimer;
+$('#manual-part').oninput = e => {
+  clearTimeout(mTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { $('#manual-results').innerHTML = ''; return; }
+  mTimer = setTimeout(async () => {
+    const rs = await api('/api/parts/search?q=' + encodeURIComponent(q));
+    $('#manual-results').innerHTML = rs.slice(0, 6).map(p =>
+      `<div class="cand" onclick="manualAdd('${p.part_num}')">
+       <div><div class="nm">${p.name}</div><div class="pn">${p.part_num}</div></div>
+       <div class="score">+ add</div></div>`).join('');
+  }, 300);
+};
+window.manualAdd = async pn => {
+  const colors = await api('/api/colors');
+  const name = prompt('Color name (e.g. Red, Black, White):', 'Red');
+  if (name === null) return;
+  const col = colors.find(c => c.name.toLowerCase() === name.toLowerCase());
+  if (!col) return toast('unknown color: ' + name, true);
+  const qty = +prompt('Quantity:', '1') || 1;
+  await api('/api/inventory', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ part_num: pn, color_id: col.id, quantity: qty }) });
+  $('#manual-results').innerHTML = ''; $('#manual-part').value = '';
+  toast(`added ${qty}× ${pn} ${col.name}`); loadInventory();
+};
+
+/* ---------- builds ---------- */
+async function loadBuilds() {
+  const box = $('#builds-list');
+  box.innerHTML = '<div class="spin"></div>';
+  try {
+    const r = await api('/api/buildable?mode=' + mode);
+    if (!r.sets.length) { box.innerHTML = '<div class="empty">Nothing found - add more parts to your inventory.</div>'; return; }
+    box.innerHTML = r.sets.map(s => {
+      const full = s.pct >= 100, near = s.pct >= 90;
+      return `<div class="set-card" onclick="toggleMissing(this,'${s.set_num}')">
+        <img src="${s.img_url || ''}" onerror="this.style.visibility='hidden'"/>
+        <div class="body">
+          <div class="nm">${s.name}</div>
+          <div class="meta">${s.set_num} · ${s.year} · ${s.theme || ''} · need ${s.need} pcs · you have ${s.have}</div>
+          <div class="bar ${full ? 'full' : ''}"><div style="width:${Math.min(s.pct, 100)}%"></div></div>
+        </div>
+        <div class="pct ${full ? 'full' : near ? 'near' : ''}">${s.pct}%</div>
+      </div><div class="missing" style="display:none"></div>`;
+    }).join('');
+  } catch (e) { box.innerHTML = `<div class="empty">${e}</div>`; }
+}
+window.toggleMissing = async (el, setNum) => {
+  const box = el.nextElementSibling;
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  box.style.display = 'block'; box.innerHTML = '<div class="spin"></div>';
+  const rows = await api(`/api/buildable/${encodeURIComponent(setNum)}/missing?mode=` + mode);
+  box.innerHTML = '<div class="label mb">parts needed</div>' + rows.map(m => `
+    <div class="miss-row">
+      ${m.img_url ? `<img src="${m.img_url}"/>` : '<div style="width:30px"></div>'}
+      ${m.rgb ? `<span class="swatch" style="background:#${m.rgb}"></span>` : ''}
+      <span>${m.part_name || m.part_num}${m.color_name ? ' · ' + m.color_name : ''}</span>
+      <span class="cnt ${m.have >= m.need ? 'have-ok' : 'have-no'}">${m.have}/${m.need}</span>
+    </div>`).join('');
+};
+
+/* ---------- ideas ---------- */
+$('#gen-ideas').onclick = async () => {
+  const box = $('#ideas-list'); const btn = $('#gen-ideas');
+  btn.disabled = true;
+  box.innerHTML = '<div class="spin"></div><div class="empty" style="padding:0">the LLM is thinking about your bricks…</div>';
+  try {
+    const r = await api('/api/advise', { method: 'POST' });
+    const ideas = r.ideas || [];
+    box.innerHTML = '<div class="ideas-grid">' + ideas.map(i => `
+      <div class="idea">
+        <div class="hd"><span class="emoji">${i.emoji || '🧱'}</span>
+          <span class="ttl">${i.title}</span>
+          <span class="diff ${i.difficulty || 'easy'}">${i.difficulty || ''}</span></div>
+        <p>${i.description || ''}</p>
+        <div class="parts">${(i.parts_used || []).map(p => `<span>${p}</span>`).join('')}</div>
+      </div>`).join('') + '</div>';
+  } catch (e) { box.innerHTML = `<div class="empty">${e}</div>`; }
+  btn.disabled = false;
+};
+
+refreshCount();
+</script>
+</body>
+</html>

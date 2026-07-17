@@ -1,0 +1,4 @@
+lego.db
+*__pycache__*
+CLAUDE.md
+.env
