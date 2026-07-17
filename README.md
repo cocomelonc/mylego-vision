@@ -2,13 +2,12 @@
 
 ![img](./img/builds.png)    
 
-What can I build from my pile of LEGO parts?
-Scan parts with computer vision -> keep an inventory -> rank every real LEGO set
-by buildability -> ask a local LLM for creative MOC ideas.
+What can I build from my pile of LEGO parts?    
+Scan parts with computer vision -> keep an inventory -> rank every real LEGO set by buildability -> ask a local LLM for creative MOC ideas.   
 
 ## Architecture
 
-```
+```bash
 single-part photo --> Brickognize API (part id, free CV service trained on all LEGO parts)
       --> local dominant-color -> nearest LEGO color (Rebrickable palette)
       --> optional: Ollama vision LLM (qwen3.6:27b on the GPU box) second opinion
@@ -49,7 +48,7 @@ Config in `.env`:
 
 ```bash
 OLLAMA_HOST=http://10.10.10.100:11434     # your GPU box address (Nvidia)
-OLLAMA_VISION_MODEL=qwen3.6:27b        # any vision-capable ollama model
+OLLAMA_VISION_MODEL=qwen3.6:27b           # any vision-capable ollama model
 OLLAMA_TEXT_MODEL=qwen3.6:27b
 ```
 
@@ -62,13 +61,16 @@ fully-CPU later just point `OLLAMA_HOST` at a smaller local model
 
 **Scan** has two explicit modes:
 
-- `one part`: Brickognize + local color detection; `deep` also asks the Ollama vision model.
-- `scattered pile`: separates up to 20 visible, non-touching pieces on a plain contrasting surface, sends each crop to Brickognize, and lets you review every part/color before one atomic Inventory update. Touching or overlapping pieces can be merged and are deliberately not added without confirmation.
+`one part` - Brickognize + local color detection; `deep` also asks the Ollama vision model.   
+
+![img](./img/scan.png)    
+
+`scattered pile` - separates up to 20 visible, non-touching pieces on a plain contrasting surface, sends each crop to Brickognize, and lets you review every part/color before one atomic Inventory update. Touching or overlapping pieces can be merged and are deliberately not added without confirmation.    
 
 The pile separator uses the existing Pillow dependency. It downloads no detector,
 training dataset, or AGPL YOLO implementation.
 
-![img](./img/scan.png)    
+![img](./img/scan2.png)    
 
 **Inventory** - confirmed parts land in `my_parts` (part_num + color + qty).
 Manual add by part number/name works, and a complete set you own can be imported
@@ -92,13 +94,13 @@ the app never generates a replacement image. The cache keeps the latest 60 real 
 
 Sample photos to try:
 
-- `test_images/brick-*.jpg`, `plate-*.jpg`, etc. — one-part Scan fixtures.
-- `test_images/pile-*.jpg` — six multi-part fixtures with 3, 4, 5, 6, 8,
+- `test_images/brick-*.jpg`, `plate-*.jpg`, etc. - one-part Scan fixtures.
+- `test_images/pile-*.jpg` - six multi-part fixtures with 3, 4, 5, 6, 8,
   and 10 separated pieces across landscape, portrait, square, sparse, and denser layouts.
 
 ## Tests
 
-```sh
+```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
 

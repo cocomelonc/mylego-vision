@@ -866,7 +866,7 @@ window.toggleMissing = async (el, setNum) => {
       </div>
     </div>` : '';
     if (!missingRows.length) {
-      box.innerHTML = preview + '<div class="build-complete">✓ Complete — your Inventory contains every required piece in this mode.</div>';
+      box.innerHTML = preview + '<div class="build-complete">✓ Complete - your Inventory contains every required piece in this mode.</div>';
       return;
     }
     box.innerHTML = preview +
@@ -907,7 +907,7 @@ async function loadIdeaPreview(idea, index, serial) {
       actions.innerHTML = '<span class="idea-resolution">no exact real photo found</span>';
       note.textContent = preview.reason === 'real_image_unavailable'
         ? 'A matching catalog entry exists, but its real image is currently unavailable.'
-        : 'No verified real catalog image exists for this original MOC — showing a placeholder.';
+        : 'No verified real catalog image exists for this original MOC - showing a placeholder.';
       actions.classList.add('ready');
       return;
     }
@@ -922,7 +922,7 @@ async function loadIdeaPreview(idea, index, serial) {
     if (serial !== ideasSerial || !stage.isConnected) return;
     stage.innerHTML = '<img class="placeholder" src="/static/lego-placeholder.svg" alt="No verified real photo available"/>';
     actions.innerHTML = '<span class="idea-resolution">real photo unavailable</span>';
-    note.textContent = 'Could not verify a real image — showing a placeholder.';
+    note.textContent = 'Could not verify a real image - showing a placeholder.';
     actions.classList.add('ready');
   }
 }
