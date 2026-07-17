@@ -84,6 +84,8 @@ parts that are still missing. `exact color` / `any color` modes.
 
 ![img](./img/builds.png)    
 
+![img](./img/builds2.png)    
+
 **AI Ideas** - the local LLM suggests original small MOCs using only your parts.
 If an idea exactly matches a real set in the local Rebrickable catalog, its original
 CDN image is downloaded, verified, cached in SQLite, and offered for download. An
