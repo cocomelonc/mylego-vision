@@ -9,9 +9,12 @@ by buildability -> ask a local LLM for creative MOC ideas.
 ## Architecture
 
 ```
-photo --> Brickognize API (part id, free CV service trained on all LEGO parts)
+single-part photo --> Brickognize API (part id, free CV service trained on all LEGO parts)
       --> local dominant-color -> nearest LEGO color (Rebrickable palette)
       --> optional: Ollama vision LLM (qwen3.6:27b on the GPU box) second opinion
+                                    │
+scattered-parts photo --> local Pillow background separation --> one crop per piece
+                                    --> Brickognize API per crop
                                     │
                                     ▼
         SQLite (lego.db) <-- Rebrickable full dataset (~27k sets, 63k parts,
@@ -57,7 +60,13 @@ fully-CPU later just point `OLLAMA_HOST` at a smaller local model
 
 ## Workflow
 
-**Scan** - one part on a white background (start simple: 1 part -> 5-10 laid out -> the full pile later). `fast` = Brickognize + color detect, `deep` = also asks the Ollama vision model.    
+**Scan** has two explicit modes:
+
+- `one part`: Brickognize + local color detection; `deep` also asks the Ollama vision model.
+- `scattered pile`: separates up to 20 visible, non-touching pieces on a plain contrasting surface, sends each crop to Brickognize, and lets you review every part/color before one atomic Inventory update. Touching or overlapping pieces can be merged and are deliberately not added without confirmation.
+
+The pile separator uses the existing Pillow dependency. It downloads no detector,
+training dataset, or AGPL YOLO implementation.
 
 ![img](./img/scan.png)    
 
@@ -81,7 +90,11 @@ the app never generates a replacement image. The cache keeps the latest 60 real 
 
 ![img](./img/ideas.png)    
 
-Sample part photos to try: `test_images/*.jpg`.
+Sample photos to try:
+
+- `test_images/brick-*.jpg`, `plate-*.jpg`, etc. — one-part Scan fixtures.
+- `test_images/pile-*.jpg` — six multi-part fixtures with 3, 4, 5, 6, 8,
+  and 10 separated pieces across landscape, portrait, square, sparse, and denser layouts.
 
 ## Tests
 
@@ -94,7 +107,9 @@ Sample part photos to try: `test_images/*.jpg`.
 | endpoint | what |
 |---|---|
 | `POST /api/scan?engine=fast\|deep` | identify a part on a photo |
+| `POST /api/scan/pile?max_parts=1..20` | crop and identify separated parts on one photo |
 | `GET/POST/DELETE /api/inventory` | my parts CRUD |
+| `POST /api/inventory/bulk` | atomically add reviewed pile-scan results |
 | `GET /api/sets/search?q=...` | find a set to preview/import |
 | `POST /api/inventory/import-set/{set}` | add a complete owned set to inventory |
 | `GET /api/buildable?mode=strict\|loose` | ranked buildable sets |
@@ -106,7 +121,7 @@ Sample part photos to try: `test_images/*.jpg`.
 
 ## Data & credits
 
-- [Rebrickable](https://rebrickable.com/downloads/) - full LEGO catalog CSV dumps (CC-BY-4.0-ish, see their terms)
+- [Rebrickable](https://rebrickable.com/downloads/) - full LEGO catalog CSV dumps; review its current download terms before redistributing the database
 - [Brickognize](https://brickognize.com) - free part-recognition API by Piotr Rybak
-- next steps: YOLO fine-tune on [B200C LEGO renders dataset](https://mostwiedzy.pl/en/open-research-data/b200c-lego-classification-dataset-200-bricks-800000-images,209111855855869-0)
-  for multi-part pile detection, LDraw/LeoCAD for build instructions.
+- Pillow-only connected-region separation is used for scattered photos; no third-party
+  detector weights or LEGO training images are redistributed by this project.

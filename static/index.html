@@ -114,6 +114,38 @@
       box-shadow: 0 10px 30px rgba(30,108,153,.08); backdrop-filter: blur(8px);
     }
     #scan-results > .empty:first-child { padding-top: 28px; }
+    .scan-modebar {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--sep);
+      border-radius: var(--radius-lg); background: rgba(255,255,255,.78);
+    }
+    .scan-modebar .hint { text-align: right; max-width: 440px; }
+    .pile-summary {
+      padding: 12px 14px; margin-bottom: 12px; border-radius: var(--radius);
+      background: #FFF8DE; border: 1px solid rgba(217,155,0,.3);
+      color: #755600; font-size: .75rem; line-height: 1.45;
+    }
+    .pile-list { display: grid; gap: 12px; }
+    .pile-part {
+      display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 14px;
+      padding: 13px; border: 1px solid var(--sep); border-radius: var(--radius);
+      background: var(--bg3); transition: border-color .15s, opacity .15s;
+    }
+    .pile-part:has(.pile-use:checked) { border-color: rgba(38,158,88,.55); background: #F2FBF6; }
+    .pile-part.unusable { opacity: .72; }
+    .pile-crop {
+      width: 108px; height: 92px; object-fit: contain; padding: 4px;
+      border: 1px solid var(--sep); border-radius: 8px; background: #fff;
+    }
+    .pile-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+    .pile-head .nm { font-size: .82rem; font-weight: 650; flex: 1; }
+    .pile-fields { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(130px, .7fr) 70px; gap: 8px; }
+    .pile-fields select, .pile-fields input { width: 100%; min-width: 0; }
+    .pile-score { color: var(--green); font: .7rem var(--mono); }
+    .pile-actions {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--sep);
+    }
 
     .btn {
       height: 42px; padding: 0 20px; border-radius: var(--radius); cursor: pointer;
@@ -308,6 +340,12 @@
     .toast.show { opacity: 1; }
     .toast.err { border-color: var(--red); color: var(--red); }
     @media (max-width: 700px) {
+      .scan-modebar { align-items: stretch; flex-direction: column; }
+      .scan-modebar .hint { text-align: left; }
+      .pile-part { grid-template-columns: 82px minmax(0, 1fr); }
+      .pile-crop { width: 82px; height: 78px; }
+      .pile-fields { grid-template-columns: 1fr; }
+      .pile-actions { align-items: stretch; flex-direction: column; }
       .set-import, .set-preview { grid-template-columns: 1fr; }
       .set-preview > img { height: 200px; }
       .set-import-result { align-items: flex-start; flex-wrap: wrap; }
@@ -334,23 +372,30 @@
 
   <!-- ============ SCAN ============ -->
   <div class="panel active" id="panel-scan">
+    <div class="scan-modebar">
+      <div class="toggle" id="scan-kind">
+        <button class="on" data-v="single">one part</button>
+        <button data-v="pile">scattered pile</button>
+      </div>
+      <div class="hint" id="scan-kind-hint">Best accuracy: one part on a plain contrasting background.</div>
+    </div>
     <div class="scan-grid">
       <div>
         <div class="drop" id="drop">
           <div class="big">◨</div>
-          <div>Drop a photo of one LEGO part<br/>or click to browse</div>
+          <div id="drop-copy">Drop a photo of one LEGO part<br/>or click to browse</div>
           <input type="file" id="file" accept="image/*" hidden />
         </div>
         <div id="preview-box" class="mt" style="display:none">
           <img class="preview-img" id="preview" alt="preview"/>
-          <div class="row mt">
+          <div class="row mt" id="scan-controls">
             <div class="toggle" id="engine">
               <button class="on" data-v="fast">fast</button>
               <button data-v="deep">deep · ollama vision</button>
             </div>
             <button class="btn" id="scan-btn">Identify part</button>
           </div>
-          <div class="hint mt">fast = Brickognize CV + color detection · deep also asks the vision LLM on your GPU</div>
+          <div class="hint mt" id="scan-help">fast = Brickognize CV + color detection · deep also asks the vision LLM on your GPU</div>
         </div>
       </div>
       <div>
@@ -425,8 +470,9 @@ const safeImageUrl = value => {
   } catch { return ''; }
 };
 
-let scanFile = null, engine = 'fast', mode = 'strict';
+let scanFile = null, engine = 'fast', scanKind = 'single', mode = 'strict';
 let selCand = null, selColor = null;
+let pileParts = [];
 let buildSets = new Map(), ownedSetMatches = new Map();
 
 function toast(msg, err=false) {
@@ -448,6 +494,7 @@ $$('.tab').forEach(b => b.onclick = () => {
 /* toggles */
 $('#engine').onclick = e => { if (e.target.dataset.v) { engine = e.target.dataset.v;
   $$('#engine button').forEach(b => b.classList.toggle('on', b === e.target)); } };
+$('#scan-kind').onclick = e => { if (e.target.dataset.v) setScanKind(e.target.dataset.v); };
 $('#mode').onclick = e => { if (e.target.dataset.v) { mode = e.target.dataset.v;
   $$('#mode button').forEach(b => b.classList.toggle('on', b === e.target)); loadBuilds(); } };
 
@@ -476,16 +523,112 @@ function setFile(f) {
   $('#preview-box').style.display = 'block';
 }
 
+function setScanKind(kind) {
+  scanKind = kind;
+  $$('#scan-kind button').forEach(b => b.classList.toggle('on', b.dataset.v === kind));
+  const pile = kind === 'pile';
+  $('#engine').style.display = pile ? 'none' : 'inline-flex';
+  $('#drop-copy').innerHTML = pile
+    ? 'Drop a photo of scattered LEGO parts<br/>or click to browse'
+    : 'Drop a photo of one LEGO part<br/>or click to browse';
+  $('#scan-btn').textContent = pile ? 'Identify separated parts' : 'Identify part';
+  $('#scan-kind-hint').textContent = pile
+    ? 'Lay up to 20 pieces apart on a plain contrasting surface. Touching pieces can merge.'
+    : 'Best accuracy: one part on a plain contrasting background.';
+  $('#scan-help').innerHTML = pile
+    ? 'The full photo stays on this server; each crop is sent to Brickognize under its <a href="https://brickognize.com/terms-of-service/" target="_blank" rel="noopener">terms</a>. No YOLO model is downloaded.'
+    : 'fast = Brickognize CV + color detection · deep also asks the vision LLM on your GPU';
+  $('#scan-results').innerHTML = pile
+    ? '<div class="empty">Scattered-pile results will appear here.<br/><br/><span class="hint">Leave visible gaps between pieces and check every match before adding it.</span></div>'
+    : '<div class="empty">Scan results will appear here.<br/><br/><span class="hint">Tip: start with one part on a white background.</span></div>';
+}
+
 $('#scan-btn').onclick = async () => {
   if (!scanFile) return;
   const box = $('#scan-results');
-  box.innerHTML = '<div class="spin"></div><div class="empty" style="padding:0">identifying part' + (engine==='deep' ? ' + asking vision LLM…' : '…') + '</div>';
+  const pile = scanKind === 'pile';
+  box.innerHTML = '<div class="spin"></div><div class="empty" style="padding:0">' +
+    (pile ? 'finding and identifying separated pieces…' : 'identifying part' + (engine==='deep' ? ' + asking vision LLM…' : '…')) + '</div>';
   const fd = new FormData(); fd.append('image', scanFile);
   try {
-    const r = await api('/api/scan?engine=' + engine, { method: 'POST', body: fd });
-    renderScan(r);
+    const endpoint = pile ? '/api/scan/pile?max_parts=20' : '/api/scan?engine=' + engine;
+    const r = await api(endpoint, { method: 'POST', body: fd });
+    if (pile) renderPileScan(r); else renderScan(r);
   } catch (e) { box.innerHTML = `<div class="empty">scan failed: ${escapeHtml(e)}</div>`; }
 };
+
+function renderPileScan(result) {
+  pileParts = Array.isArray(result.parts) ? result.parts : [];
+  if (!pileParts.length) {
+    $('#scan-results').innerHTML = `<div class="empty">No separate pieces found.<br/><br/><span class="hint">${escapeHtml(result.warning || 'Use a plain contrasting surface and leave gaps between pieces.')}</span></div>`;
+    return;
+  }
+  const cards = pileParts.map((part, index) => {
+    const knownIndex = part.candidates.findIndex(candidate => candidate.in_db);
+    const usable = knownIndex >= 0 && part.colors.length > 0;
+    const candidates = part.candidates.map((candidate, candidateIndex) =>
+      `<option value="${candidateIndex}" ${candidateIndex === knownIndex ? 'selected' : ''} ${candidate.in_db ? '' : 'disabled'}>` +
+      `${escapeHtml(candidate.part_num)} · ${escapeHtml(candidate.name || '?')} · ${(candidate.score * 100).toFixed(0)}%</option>`
+    ).join('');
+    const colors = part.colors.map((color, colorIndex) =>
+      `<option value="${colorIndex}">${escapeHtml(color.name)}</option>`
+    ).join('');
+    const top = knownIndex >= 0 ? part.candidates[knownIndex] : null;
+    return `<div class="pile-part ${usable ? '' : 'unusable'}" data-pile-index="${index}">
+      <img class="pile-crop" src="${escapeHtml(part.preview)}" alt="Detected piece ${escapeHtml(part.index)}"/>
+      <div>
+        <div class="pile-head">
+          <input class="pile-use" type="checkbox" ${usable ? 'checked' : 'disabled'}/>
+          <span class="nm">piece ${escapeHtml(part.index)}</span>
+          <span class="pile-score">${top ? (top.score * 100).toFixed(0) + '% match' : 'not recognized'}</span>
+        </div>
+        <div class="pile-fields">
+          <select class="pile-candidate" ${knownIndex < 0 ? 'disabled' : ''}>${candidates || '<option>no catalog match</option>'}</select>
+          <select class="pile-color" ${part.colors.length ? '' : 'disabled'}>${colors || '<option>no color</option>'}</select>
+          <input class="pile-qty" type="number" value="1" min="1" aria-label="Quantity"/>
+        </div>
+        ${part.error ? `<div class="hint mt">recognition failed: ${escapeHtml(part.error)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  $('#scan-results').innerHTML = `
+    <div class="pile-summary">Found ${pileParts.length} visible region${pileParts.length === 1 ? '' : 's'}. ${escapeHtml(result.warning || '')}</div>
+    <div class="pile-list">${cards}</div>
+    <div class="pile-actions">
+      <span class="hint">Only checked, catalog-verified suggestions will be added.</span>
+      <button class="btn green" id="add-pile-btn">+ Add checked parts</button>
+    </div>`;
+  $('#add-pile-btn').onclick = addPileParts;
+}
+
+async function addPileParts() {
+  const items = [];
+  $$('.pile-part').forEach(card => {
+    if (!card.querySelector('.pile-use')?.checked) return;
+    const part = pileParts[Number(card.dataset.pileIndex)];
+    const candidate = part.candidates[Number(card.querySelector('.pile-candidate').value)];
+    const color = part.colors[Number(card.querySelector('.pile-color').value)];
+    const quantity = Number(card.querySelector('.pile-qty').value);
+    if (candidate?.in_db && color && Number.isInteger(quantity) && quantity > 0) {
+      items.push({part_num: candidate.part_num, color_id: color.color_id, quantity});
+    }
+  });
+  if (!items.length) return toast('select at least one valid recognized part', true);
+  const button = $('#add-pile-btn');
+  button.disabled = true;
+  try {
+    const result = await api('/api/inventory/bulk', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(items)
+    });
+    toast(`added ${result.added_quantity} piece${result.added_quantity === 1 ? '' : 's'}`);
+    refreshCount();
+    $$('.pile-use').forEach(checkbox => { if (checkbox.checked) checkbox.checked = false; });
+  } catch (e) {
+    toast('add failed: ' + e, true);
+  } finally {
+    button.disabled = false;
+  }
+}
 
 function renderScan(r) {
   selCand = null; selColor = null;

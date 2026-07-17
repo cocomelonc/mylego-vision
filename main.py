@@ -3,6 +3,7 @@
 # rank every real LEGO set by buildability, ask a local LLM for MOC ideas.
 # copyright (c) 2026 cocomelonc
 # author: cocomelonc
+import asyncio
 import base64
 import hashlib
 import io
@@ -20,7 +21,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,6 +38,8 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://10.10.10.95:11434").rstrip("/")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "qwen3.6:27b")
 OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL", "qwen3.6:27b")
 BRICKOGNIZE_URL = "https://api.brickognize.com/predict/"
+PILE_MAX_PARTS = 20
+PILE_WORKING_SIDE = 960
 IDEA_PREVIEW_CACHE_LIMIT = 60
 IDEA_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
 IDEA_PLACEHOLDER_URL = "/static/lego-placeholder.svg"
@@ -219,6 +222,156 @@ def parse_json_loose(text: str):
     raise json.JSONDecodeError("no valid JSON object or array found", text, 0)
 
 
+def _median(values: list[int]) -> int:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _edge_background(img: Image.Image) -> tuple[tuple[int, int, int], int]:
+    """Estimate a plain tabletop/background color and its natural variation."""
+    width, height = img.size
+    step = max(1, min(width, height) // 160)
+    pixels = img.load()
+    samples = []
+    for x in range(0, width, step):
+        samples.extend((pixels[x, 0], pixels[x, height - 1]))
+    for y in range(step, height - 1, step):
+        samples.extend((pixels[0, y], pixels[width - 1, y]))
+    background = tuple(_median([p[channel] for p in samples]) for channel in range(3))
+    deviations = sorted(max(abs(p[i] - background[i]) for i in range(3)) for p in samples)
+    edge_noise = deviations[min(len(deviations) - 1, int(len(deviations) * 0.85))]
+    return background, edge_noise
+
+
+def _connected_boxes(mask: Image.Image, min_area: int) -> list[tuple[int, int, int, int, int]]:
+    """Return 8-connected foreground boxes as (area, left, top, right, bottom)."""
+    width, height = mask.size
+    foreground = bytearray(mask.tobytes())
+    boxes = []
+    for start in range(width * height):
+        if not foreground[start]:
+            continue
+        foreground[start] = 0
+        stack = [start]
+        area = 0
+        left = right = start % width
+        top = bottom = start // width
+        while stack:
+            pos = stack.pop()
+            x, y = pos % width, pos // width
+            area += 1
+            left, right = min(left, x), max(right, x)
+            top, bottom = min(top, y), max(bottom, y)
+            for ny in range(max(0, y - 1), min(height, y + 2)):
+                row = ny * width
+                for nx in range(max(0, x - 1), min(width, x + 2)):
+                    neighbour = row + nx
+                    if foreground[neighbour]:
+                        foreground[neighbour] = 0
+                        stack.append(neighbour)
+        if area >= min_area:
+            boxes.append((area, left, top, right + 1, bottom + 1))
+    return boxes
+
+
+def extract_scattered_parts(raw: bytes, max_parts: int = 12) -> list[dict]:
+    """Extract non-touching LEGO pieces from a photo taken on a plain surface.
+
+    This deliberately uses Pillow rather than a bundled ML detector. It keeps the
+    feature dependency- and model-license-free, while making the limitation clear:
+    touching or overlapping bricks can be returned as one region.
+    """
+    try:
+        with Image.open(io.BytesIO(raw)) as opened:
+            source = ImageOps.exif_transpose(opened).convert("RGB")
+    except Exception as exc:
+        raise ValueError("invalid image") from exc
+    if source.width < 80 or source.height < 80:
+        raise ValueError("image is too small")
+
+    working = source.copy()
+    working.thumbnail((PILE_WORKING_SIDE, PILE_WORKING_SIDE), Image.Resampling.LANCZOS)
+    background, edge_noise = _edge_background(working)
+    flat_background = Image.new("RGB", working.size, background)
+    red, green, blue = ImageChops.difference(working, flat_background).split()
+    difference = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    threshold = min(96, max(28, edge_noise + 18))
+    mask = difference.point(lambda value: 255 if value >= threshold else 0)
+    mask = mask.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.MinFilter(5))
+
+    image_area = working.width * working.height
+    components = _connected_boxes(mask, max(80, int(image_area * 0.00055)))
+    useful = []
+    for component in components:
+        area, left, top, right, bottom = component
+        box_width, box_height = right - left, bottom - top
+        box_area = box_width * box_height
+        if min(box_width, box_height) < 12 or box_area > image_area * 0.88:
+            continue
+        if area / box_area < 0.06:
+            continue
+        useful.append(component)
+
+    # Prefer the largest real regions when noise produces more than the limit,
+    # then present them in natural reading order.
+    useful.sort(reverse=True)
+    useful = useful[:max_parts]
+    useful.sort(key=lambda item: (item[2], item[1]))
+
+    scale_x = source.width / working.width
+    scale_y = source.height / working.height
+    regions = []
+    for _, left, top, right, bottom in useful:
+        margin = max(8, int(max(right - left, bottom - top) * 0.09))
+        left, top = max(0, left - margin), max(0, top - margin)
+        right, bottom = min(working.width, right + margin), min(working.height, bottom + margin)
+        original_box = (
+            max(0, int(left * scale_x)),
+            max(0, int(top * scale_y)),
+            min(source.width, int(right * scale_x + 0.999)),
+            min(source.height, int(bottom * scale_y + 0.999)),
+        )
+        regions.append({"bbox": original_box, "image": source.crop(original_box)})
+    return regions
+
+
+def _jpeg_bytes(img: Image.Image, max_side: int = 900, quality: int = 88) -> bytes:
+    prepared = img.copy()
+    prepared.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    encoded = io.BytesIO()
+    prepared.save(encoded, format="JPEG", quality=quality, optimize=True)
+    return encoded.getvalue()
+
+
+async def _brickognize_items(
+    client: httpx.AsyncClient, raw: bytes, filename: str, content_type: str
+) -> list[dict]:
+    response = await client.post(
+        BRICKOGNIZE_URL,
+        files={"query_image": (filename, raw, content_type)},
+    )
+    response.raise_for_status()
+    return response.json().get("items", [])
+
+
+def _catalog_candidates(con: sqlite3.Connection, items: list[dict], limit: int = 6) -> list[dict]:
+    candidates = []
+    for item in items[:limit]:
+        part_num = str(item.get("id", ""))
+        known = con.execute(
+            "SELECT part_num FROM parts WHERE part_num = ?", (part_num,)
+        ).fetchone()
+        candidates.append({
+            "part_num": part_num,
+            "name": item.get("name"),
+            "type": item.get("type"),
+            "score": round(float(item.get("score") or 0), 3),
+            "img_url": item.get("img_url"),
+            "in_db": bool(known),
+        })
+    return candidates
+
+
 # ---------------------------------------------------------------- status
 
 @app.get("/api/status")
@@ -273,25 +426,14 @@ async def scan(
     # Brickognize - part identification
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                BRICKOGNIZE_URL,
-                files={"query_image": (image.filename or "part.jpg", raw,
-                                       image.content_type or "image/jpeg")})
-            r.raise_for_status()
-            items = r.json().get("items", [])
+            items = await _brickognize_items(
+                client,
+                raw,
+                image.filename or "part.jpg",
+                image.content_type or "image/jpeg",
+            )
         with closing(db()) as con:
-            for it in items[:6]:
-                pid = it.get("id", "")
-                known = con.execute(
-                    "SELECT part_num FROM parts WHERE part_num = ?", (pid,)).fetchone()
-                result["candidates"].append({
-                    "part_num": pid,
-                    "name": it.get("name"),
-                    "type": it.get("type"),
-                    "score": round(it.get("score", 0), 3),
-                    "img_url": it.get("img_url"),
-                    "in_db": bool(known),
-                })
+            result["candidates"] = _catalog_candidates(con, items)
     except Exception as e:
         log.warning("brickognize failed: %s", e)
         result["brickognize_error"] = str(e)
@@ -313,6 +455,70 @@ async def scan(
             result["ollama"] = {"error": str(e)}
 
     return result
+
+
+@app.post("/api/scan/pile")
+async def scan_pile(
+    image: UploadFile = File(...),
+    max_parts: int = Query(12, ge=1, le=PILE_MAX_PARTS),
+):
+    """Identify separated, non-touching LEGO parts on a plain background."""
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(400, "empty image")
+    try:
+        regions = extract_scattered_parts(raw, max_parts=max_parts)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not regions:
+        return {
+            "parts": [],
+            "warning": "No separate pieces found. Use a plain contrasting surface and leave gaps between pieces.",
+        }
+
+    semaphore = asyncio.Semaphore(3)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        async def recognize(index: int, region: dict) -> dict:
+            crop = region["image"]
+            crop_bytes = _jpeg_bytes(crop)
+            preview_bytes = _jpeg_bytes(crop, max_side=320, quality=78)
+            result = {
+                "index": index,
+                "bbox": list(region["bbox"]),
+                "preview": "data:image/jpeg;base64," + base64.b64encode(preview_bytes).decode(),
+                "colors": [],
+                "items": [],
+            }
+            rgb = dominant_color(crop)
+            if rgb:
+                result["detected_rgb"] = "%02X%02X%02X" % rgb
+                result["colors"] = nearest_lego_colors(rgb)
+            try:
+                async with semaphore:
+                    result["items"] = await _brickognize_items(
+                        client, crop_bytes, f"pile-part-{index}.jpg", "image/jpeg"
+                    )
+            except Exception as exc:
+                log.warning("brickognize pile crop %s failed: %s", index, exc)
+                result["error"] = str(exc)
+            return result
+
+        recognized = await asyncio.gather(*(
+            recognize(index, region) for index, region in enumerate(regions, start=1)
+        ))
+
+    with closing(db()) as con:
+        for part in recognized:
+            part["candidates"] = _catalog_candidates(con, part.pop("items"), limit=4)
+
+    return {
+        "parts": recognized,
+        "warning": (
+            "Touching or overlapping pieces may be merged. Check every suggestion before adding it."
+        ),
+    }
 
 
 # ---------------------------------------------------------------- inventory
@@ -354,6 +560,40 @@ def add_inventory(item: InvItem):
             (item.part_num, item.color_id, item.quantity))
         con.commit()
     return {"ok": True}
+
+
+@app.post("/api/inventory/bulk")
+def add_inventory_bulk(items: list[InvItem]):
+    """Atomically add user-confirmed results from a scattered-parts scan."""
+    if not items:
+        raise HTTPException(400, "no parts selected")
+    if len(items) > PILE_MAX_PARTS:
+        raise HTTPException(400, f"at most {PILE_MAX_PARTS} parts can be added at once")
+
+    combined: dict[tuple[str, int], int] = {}
+    for item in items:
+        key = (item.part_num, item.color_id)
+        combined[key] = combined.get(key, 0) + item.quantity
+
+    with closing(db()) as con:
+        for part_num, color_id in combined:
+            if not con.execute("SELECT 1 FROM parts WHERE part_num=?", (part_num,)).fetchone():
+                raise HTTPException(404, f"unknown part {part_num}")
+            if not con.execute("SELECT 1 FROM colors WHERE id=?", (color_id,)).fetchone():
+                raise HTTPException(404, f"unknown color {color_id}")
+        con.executemany(
+            """INSERT INTO my_parts (part_num, color_id, quantity) VALUES (?,?,?)
+               ON CONFLICT(part_num, color_id)
+               DO UPDATE SET quantity = quantity + excluded.quantity""",
+            [(part_num, color_id, quantity)
+             for (part_num, color_id), quantity in combined.items()],
+        )
+        con.commit()
+    return {
+        "ok": True,
+        "distinct_items": len(combined),
+        "added_quantity": sum(combined.values()),
+    }
 
 
 @app.post("/api/inventory/import-set/{set_num}")

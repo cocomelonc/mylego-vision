@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, ImageDraw
 from pydantic import ValidationError
 
 import ingest
@@ -57,6 +57,112 @@ class ColorDetectionRegressionTests(unittest.TestCase):
                     self.assertEqual(actual, color_name)
         finally:
             main._palette = old_palette
+
+
+class PileSegmentationRegressionTests(unittest.TestCase):
+    @staticmethod
+    def scattered_photo() -> bytes:
+        image = Image.new("RGB", (720, 480), "#E8EEF2")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((65, 75, 205, 175), radius=12, fill="#C91A09")
+        draw.rounded_rectangle((300, 245, 455, 355), radius=12, fill="#0055BF")
+        draw.ellipse((535, 85, 635, 185), fill="#F2CD37")
+        encoded = io.BytesIO()
+        image.save(encoded, format="JPEG", quality=95)
+        return encoded.getvalue()
+
+    def test_plain_background_photo_is_split_into_three_regions(self):
+        regions = main.extract_scattered_parts(self.scattered_photo())
+
+        self.assertEqual(len(regions), 3)
+        centers = [
+            ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+            for box in (region["bbox"] for region in regions)
+        ]
+        self.assertTrue(any(abs(x - 135) < 25 and abs(y - 125) < 25 for x, y in centers))
+        self.assertTrue(any(abs(x - 377) < 25 and abs(y - 300) < 25 for x, y in centers))
+        self.assertTrue(any(abs(x - 585) < 25 and abs(y - 135) < 25 for x, y in centers))
+
+    def test_max_parts_keeps_largest_regions(self):
+        regions = main.extract_scattered_parts(self.scattered_photo(), max_parts=2)
+
+        self.assertEqual(len(regions), 2)
+        self.assertTrue(all(region["image"].width > 100 for region in regions))
+
+    def test_invalid_image_is_rejected_before_external_requests(self):
+        with self.assertRaisesRegex(ValueError, "invalid image"):
+            main.extract_scattered_parts(b"not an image")
+
+    def test_committed_pile_fixtures_keep_their_expected_region_counts(self):
+        expected = {
+            "pile-3-primary.jpg": 3,
+            "pile-4-shapes.jpg": 4,
+            "pile-5-mixed.jpg": 5,
+            "pile-6-dense.jpg": 6,
+            "pile-8-wide.jpg": 8,
+            "pile-10-all.jpg": 10,
+        }
+        image_dir = Path(main.__file__).resolve().parent / "test_images"
+
+        for filename, region_count in expected.items():
+            with self.subTest(filename=filename):
+                regions = main.extract_scattered_parts(
+                    (image_dir / filename).read_bytes(),
+                    max_parts=main.PILE_MAX_PARTS,
+                )
+                self.assertEqual(len(regions), region_count)
+
+
+class PileEndpointRegressionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_db_path = main.DB_PATH
+        self.old_palette = main._palette
+        main.DB_PATH = str(Path(self.tmp.name) / "test.db")
+        main._palette = [
+            {"id": 5, "name": "Red", "rgb": "C91A09", "n": 10000},
+            {"id": 7, "name": "Blue", "rgb": "0055BF", "n": 9000},
+            {"id": 14, "name": "Yellow", "rgb": "F2CD37", "n": 8000},
+        ]
+        with closing(sqlite3.connect(main.DB_PATH)) as con:
+            con.execute("CREATE TABLE parts (part_num TEXT PRIMARY KEY, name TEXT)")
+            con.execute("INSERT INTO parts VALUES ('3001', 'Brick 2 x 4')")
+            con.commit()
+
+    def tearDown(self):
+        main.DB_PATH = self.old_db_path
+        main._palette = self.old_palette
+        self.tmp.cleanup()
+
+    @patch("main._brickognize_items", new_callable=AsyncMock)
+    @patch("main.extract_scattered_parts")
+    async def test_each_extracted_crop_is_returned_with_catalog_match(self, extract, recognize):
+        extract.return_value = [{
+            "bbox": (10, 20, 150, 100),
+            "image": Image.new("RGB", (140, 80), "#C91A09"),
+        }]
+        recognize.return_value = [{
+            "id": "3001", "name": "Brick 2 x 4", "type": "part",
+            "score": 0.94, "img_url": "https://example.test/3001.jpg",
+        }]
+        class MemoryUpload:
+            filename = "pile.jpg"
+            content_type = "image/jpeg"
+
+            async def read(self):
+                return b"image bytes"
+
+        upload = MemoryUpload()
+
+        result = await main.scan_pile(upload, max_parts=12)
+
+        self.assertEqual(len(result["parts"]), 1)
+        part = result["parts"][0]
+        self.assertEqual(part["bbox"], [10, 20, 150, 100])
+        self.assertEqual(part["candidates"][0]["part_num"], "3001")
+        self.assertTrue(part["candidates"][0]["in_db"])
+        self.assertTrue(part["preview"].startswith("data:image/jpeg;base64,"))
+        recognize.assert_awaited_once()
 
 
 class PrecomputeRegressionTests(unittest.TestCase):
@@ -211,6 +317,32 @@ class InventoryRegressionTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(quantity, 4)
 
+    def test_bulk_inventory_add_combines_duplicates_atomically(self):
+        result = main.add_inventory_bulk([
+            main.InvItem(part_num="3001", color_id=5, quantity=2),
+            main.InvItem(part_num="3001", color_id=5, quantity=3),
+            main.InvItem(part_num="3020", color_id=7, quantity=1),
+        ])
+
+        self.assertEqual(result["distinct_items"], 2)
+        self.assertEqual(result["added_quantity"], 6)
+        with closing(sqlite3.connect(main.DB_PATH)) as con:
+            rows = con.execute(
+                "SELECT part_num, color_id, quantity FROM my_parts ORDER BY part_num"
+            ).fetchall()
+        self.assertEqual(rows, [("3001", 5, 5), ("3020", 7, 1)])
+
+    def test_bulk_inventory_rejects_one_bad_item_without_partial_insert(self):
+        with self.assertRaises(HTTPException):
+            main.add_inventory_bulk([
+                main.InvItem(part_num="3001", color_id=5, quantity=2),
+                main.InvItem(part_num="missing", color_id=5, quantity=1),
+            ])
+
+        with closing(sqlite3.connect(main.DB_PATH)) as con:
+            count = con.execute("SELECT COUNT(*) FROM my_parts").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_set_search_returns_import_preview(self):
         rows = main.search_sets(q="serious", limit=8)
 
@@ -274,6 +406,18 @@ class ApiSchemaRegressionTests(unittest.TestCase):
         ]
         engine = next(p["schema"] for p in parameters if p["name"] == "engine")
         self.assertEqual(engine["pattern"], "^(fast|deep)$")
+
+    def test_pile_scan_has_a_bounded_part_limit(self):
+        main.app.openapi_schema = None
+        parameters = main.app.openapi()["paths"]["/api/scan/pile"]["post"][
+            "parameters"
+        ]
+        maximum = next(
+            p["schema"] for p in parameters if p["name"] == "max_parts"
+        )
+
+        self.assertEqual(maximum["minimum"], 1)
+        self.assertEqual(maximum["maximum"], main.PILE_MAX_PARTS)
 
 
 class LlmResponseRegressionTests(unittest.TestCase):
